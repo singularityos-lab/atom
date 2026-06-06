@@ -1,0 +1,14 @@
+# build artifacts
+/atom
+/atomctl
+*.test
+*.out
+
+# test VM images
+/test/vm/*.img
+/test/vm/*.qcow2
+/test/vm/initramfs*
+
+# editor / os
+.DS_Store
+*.swp
