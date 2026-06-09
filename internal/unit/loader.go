@@ -172,6 +172,35 @@ func (l *Loader) specifiersFor(f *File) Specifiers {
 	return sp
 }
 
+// EnabledDeps returns the units linked into <name>.wants/ and <name>.requires/
+// across the search path. This is the `systemctl enable` mechanism: a symlink in
+// these directories is equivalent to a Wants=/Requires= on the target, and is
+// how most services are pulled into a boot target.
+func (l *Loader) EnabledDeps(name string) (wants, requires []string) {
+	return l.linksIn(name + ".wants"), l.linksIn(name + ".requires")
+}
+
+func (l *Loader) linksIn(dirName string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range l.paths() {
+		ents, err := os.ReadDir(filepath.Join(p, dirName))
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			if e.IsDir() {
+				continue
+			}
+			if n := e.Name(); !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
 func fileExists(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && !st.IsDir()

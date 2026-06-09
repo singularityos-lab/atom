@@ -44,6 +44,11 @@ func Build(loader *unit.Loader, names ...string) (*Manager, error) {
 			return nil, fmt.Errorf("load %s: %w", n, err)
 		}
 		du := depgraph.FromFile(f)
+		// Pull in units enabled via <name>.wants/ and <name>.requires/ symlinks
+		// (the systemctl enable mechanism), equivalent to Wants=/Requires=.
+		w, r := loader.EnabledDeps(n)
+		du.Wants = append(du.Wants, w...)
+		du.Requires = append(du.Requires, r...)
 		m.graph.Add(du)
 
 		u := &Unit{Name: n, Kind: f.Type, File: f}

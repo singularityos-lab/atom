@@ -58,6 +58,23 @@ func TestLoaderHigherPrecedenceFragmentWins(t *testing.T) {
 	}
 }
 
+func TestEnabledDeps(t *testing.T) {
+	dir := t.TempDir()
+	l := &Loader{Paths: []string{dir}}
+	// emulate `systemctl enable`: symlink-equivalent entries in the .wants dir
+	writeFile(t, filepath.Join(dir, "multi-user.target.wants", "foo.service"), "")
+	writeFile(t, filepath.Join(dir, "multi-user.target.wants", "bar.service"), "")
+	writeFile(t, filepath.Join(dir, "multi-user.target.requires", "crit.service"), "")
+
+	wants, requires := l.EnabledDeps("multi-user.target")
+	if len(wants) != 2 {
+		t.Errorf("wants = %v, want 2", wants)
+	}
+	if len(requires) != 1 || requires[0] != "crit.service" {
+		t.Errorf("requires = %v, want [crit.service]", requires)
+	}
+}
+
 func TestLoaderTemplateInstance(t *testing.T) {
 	dir := t.TempDir()
 	l := &Loader{Paths: []string{dir}}
