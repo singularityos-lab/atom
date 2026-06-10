@@ -83,6 +83,15 @@ func neighbors(u *depgraph.Unit) []string {
 	return out
 }
 
+// SetDryRun toggles dry-run on every loaded service (no real exec on start).
+func (m *Manager) SetDryRun(v bool) {
+	for _, u := range m.units {
+		if u.Svc != nil {
+			u.Svc.DryRun = v
+		}
+	}
+}
+
 // Get returns a loaded unit by name.
 func (m *Manager) Get(name string) (*Unit, bool) {
 	u, ok := m.units[name]

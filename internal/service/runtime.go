@@ -59,6 +59,12 @@ type Service struct {
 	Stdout io.Writer
 	Stderr io.Writer
 
+	// DryRun simulates start/stop without executing any process: readiness is
+	// derived from Type alone. Used by the session-manager smoke test to
+	// validate ordering and readiness against a real unit set with zero side
+	// effects.
+	DryRun bool
+
 	mu      sync.Mutex
 	state   State
 	main    *exec.Cmd
@@ -89,6 +95,9 @@ func (s *Service) setState(st State) {
 // Start activates the service and blocks until it reaches its readiness point
 // for the configured Type (or fails / ctx is cancelled).
 func (s *Service) Start(ctx context.Context) error {
+	if s.DryRun {
+		return s.startDry()
+	}
 	if len(s.cfg.ExecStart) == 0 {
 		s.setState(Failed)
 		return fmt.Errorf("%s: no ExecStart", s.cfg.Name)
@@ -110,6 +119,17 @@ func (s *Service) Start(ctx context.Context) error {
 	default:
 		return s.startLongRunning(ctx)
 	}
+}
+
+// startDry simulates a start: readiness comes from Type only, no exec.
+func (s *Service) startDry() error {
+	s.setState(Activating)
+	if s.cfg.Type == TypeOneshot && !s.cfg.RemainAfterExit {
+		s.setState(Inactive)
+	} else {
+		s.setState(Active)
+	}
+	return nil
 }
 
 func (s *Service) startOneshot(ctx context.Context) error {
