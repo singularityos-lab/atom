@@ -58,6 +58,23 @@ func TestLoaderHigherPrecedenceFragmentWins(t *testing.T) {
 	}
 }
 
+func TestLoaderAliasByBasename(t *testing.T) {
+	dir := t.TempDir()
+	l := &Loader{Paths: []string{dir}}
+	writeFile(t, filepath.Join(dir, "realname.service"), "[Service]\nExecStart=/bin/real\n")
+	// A dangling absolute alias symlink must resolve by target basename.
+	if err := os.Symlink("/nonexistent/abs/realname.service", filepath.Join(dir, "alias.service")); err != nil {
+		t.Fatal(err)
+	}
+	f, err := l.Load("alias.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := f.Get("Service", "ExecStart"); v != "/bin/real" {
+		t.Errorf("alias did not resolve to real unit content: ExecStart=%q", v)
+	}
+}
+
 func TestEnabledDeps(t *testing.T) {
 	dir := t.TempDir()
 	l := &Loader{Paths: []string{dir}}

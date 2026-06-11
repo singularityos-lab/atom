@@ -79,6 +79,18 @@ func (l *Loader) findFragment(name string) (path string, isTemplate bool) {
 		if fileExists(full) {
 			return full, false
 		}
+		// An alias is a symlink whose name differs from its target. If the link
+		// is dangling (e.g. it points to an absolute path that does not resolve
+		// in a relocated unit tree), resolve it by the target's basename against
+		// the search path instead of failing.
+		if base, ok := readlinkBasename(full); ok && base != name {
+			for _, q := range l.paths() {
+				cand := filepath.Join(q, base)
+				if fileExists(cand) {
+					return cand, false
+				}
+			}
+		}
 	}
 	prefix, instance, typ := SplitName(name)
 	if instance != "" && prefix != "" && typ != "" {
@@ -204,4 +216,18 @@ func (l *Loader) linksIn(dirName string) []string {
 func fileExists(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && !st.IsDir()
+}
+
+// readlinkBasename returns the basename of a symlink's target, if path is a
+// symlink. It does not require the target to resolve.
+func readlinkBasename(path string) (string, bool) {
+	fi, err := os.Lstat(path)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		return "", false
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		return "", false
+	}
+	return baseName(target), true
 }

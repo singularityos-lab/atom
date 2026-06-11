@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/singularityos-lab/atom/internal/unit"
 )
@@ -76,6 +77,17 @@ type Config struct {
 	NotifyAccess    string
 	PIDFile         string
 
+	// Restart policy and rate limiting.
+	RestartMode        RestartMode
+	RestartSec         time.Duration
+	StartLimitInterval time.Duration
+	StartLimitBurst    int
+
+	// WatchdogSec: if > 0, a Type=notify service must send WATCHDOG=1 within
+	// this interval or it is considered hung and killed (then restarted per
+	// Restart=on-watchdog/on-failure).
+	WatchdogSec time.Duration
+
 	// RuntimeDir is the base for the per-service notify socket (default
 	// /run/atom). Overridable so the runtime is testable in a temp dir.
 	RuntimeDir string
@@ -121,5 +133,12 @@ func ConfigFromFile(f *unit.File) (Config, error) {
 	c.RemainAfterExit = f.Bool("Service", "RemainAfterExit", false)
 	c.NotifyAccess = f.GetDefault("Service", "NotifyAccess", "main")
 	c.PIDFile = f.GetDefault("Service", "PIDFile", "")
+
+	c.RestartMode = parseRestart(f.GetDefault("Service", "Restart", "no"))
+	c.RestartSec = f.Duration("Service", "RestartSec", 100*time.Millisecond)
+	// StartLimitIntervalSec / StartLimitBurst live in [Unit].
+	c.StartLimitInterval = f.Duration("Unit", "StartLimitIntervalSec", 10*time.Second)
+	c.StartLimitBurst = int(f.Int("Unit", "StartLimitBurst", 5))
+	c.WatchdogSec = f.Duration("Service", "WatchdogSec", 0)
 	return c, nil
 }
