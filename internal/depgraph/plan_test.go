@@ -130,8 +130,12 @@ Conflicts=rescue.service
 		t.Fatal(err)
 	}
 	u := FromFile(f)
-	if len(u.After) != 1 || u.After[0] != "network.target" {
-		t.Errorf("After = %v", u.After)
+	if !contains(u.After, "network.target") {
+		t.Errorf("After = %v, want to contain network.target", u.After)
+	}
+	// DefaultDependencies (default yes) adds sysinit.target + basic.target.
+	if !contains(u.After, "basic.target") || !contains(u.After, "sysinit.target") {
+		t.Errorf("default deps not applied: After = %v", u.After)
 	}
 	if len(u.Requires) != 1 || u.Requires[0] != "dbus.service" {
 		t.Errorf("Requires = %v", u.Requires)
@@ -139,6 +143,46 @@ Conflicts=rescue.service
 	if len(u.Conflicts) != 1 || u.Conflicts[0] != "rescue.service" {
 		t.Errorf("Conflicts = %v", u.Conflicts)
 	}
+}
+
+func TestDefaultDependenciesNo(t *testing.T) {
+	f, _ := unit.Parse("early.service", strings.NewReader(
+		"[Unit]\nDefaultDependencies=no\n[Service]\nExecStart=/bin/true\n"))
+	u := FromFile(f)
+	if contains(u.After, "basic.target") || contains(u.After, "sysinit.target") {
+		t.Errorf("DefaultDependencies=no must add no implicit ordering: After = %v", u.After)
+	}
+}
+
+func TestLeafServiceOrderedAfterBasic(t *testing.T) {
+	mk := func(name, body string) *Unit {
+		f, _ := unit.Parse(name, strings.NewReader(body))
+		return FromFile(f)
+	}
+	g := New()
+	g.Add(mk("graphical.target", "[Unit]\nWants=leaf.service\nRequires=basic.target\n"))
+	g.Add(mk("basic.target", "[Unit]\nRequires=sysinit.target\nAfter=sysinit.target\n"))
+	g.Add(mk("sysinit.target", "[Unit]\n"))
+	g.Add(mk("leaf.service", "[Service]\nExecStart=/bin/true\n"))
+
+	p := g.PlanStart("graphical.target")
+	// The leaf service, with no explicit ordering, must land after basic.target
+	// purely from DefaultDependencies.
+	if !beforeIn(p, "basic.target", "leaf.service") {
+		t.Errorf("leaf.service not ordered after basic.target: %q", layersString(p))
+	}
+	if !beforeIn(p, "sysinit.target", "basic.target") {
+		t.Errorf("basic.target not ordered after sysinit.target: %q", layersString(p))
+	}
+}
+
+func contains(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // beforeIn reports whether unit a is in a strictly earlier layer than b.

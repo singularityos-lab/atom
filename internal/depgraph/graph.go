@@ -19,9 +19,10 @@ type Unit struct {
 	Conflicts []string
 }
 
-// FromFile extracts the dependency projection from a parsed unit file.
+// FromFile extracts the dependency projection from a parsed unit file,
+// including systemd's implicit DefaultDependencies (unless DefaultDependencies=no).
 func FromFile(f *unit.File) *Unit {
-	return &Unit{
+	u := &Unit{
 		Name:      f.Name,
 		After:     f.Strv("Unit", "After"),
 		Before:    f.Strv("Unit", "Before"),
@@ -31,6 +32,29 @@ func FromFile(f *unit.File) *Unit {
 		BindsTo:   f.Strv("Unit", "BindsTo"),
 		PartOf:    f.Strv("Unit", "PartOf"),
 		Conflicts: f.Strv("Unit", "Conflicts"),
+	}
+	if f.Bool("Unit", "DefaultDependencies", true) {
+		applyDefaultDeps(u, f.Type)
+	}
+	return u
+}
+
+// applyDefaultDeps adds the boot-ordering edges systemd injects implicitly when
+// DefaultDependencies=yes. Only the After/Before edges that affect start
+// ordering are added (the shutdown.target Conflicts/Before edges matter only to
+// the stop transaction and are omitted from the boot closure). Honoring
+// DefaultDependencies=no on early units (journald, udev, ...) is what keeps them
+// from being ordered after basic.target and cycling.
+func applyDefaultDeps(u *Unit, t unit.Type) {
+	switch t {
+	case unit.TypeService:
+		u.After = append(u.After, "sysinit.target", "basic.target")
+	case unit.TypeSocket:
+		u.After = append(u.After, "sysinit.target")
+		u.Before = append(u.Before, "sockets.target")
+	case unit.TypeTimer:
+		u.After = append(u.After, "sysinit.target")
+		u.Before = append(u.Before, "timers.target")
 	}
 }
 
