@@ -45,6 +45,11 @@ func run(argv []string) int {
 		return atomctl.Main(argv[2:])
 	case "run":
 		return sessionrun.Main(argv[2:])
+	case "noop":
+		// A no-op that exits 0, used as ExecStart for synthetic boot-test units
+		// so the test initramfs needs no external binaries.
+		fmt.Printf("atom noop: %v\n", argv[2:])
+		return 0
 	case "version", "--version", "-v":
 		fmt.Printf("atom %s\n", version)
 		return 0
