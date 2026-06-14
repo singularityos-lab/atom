@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/singularityos-lab/atom/internal/cgroup"
+	"github.com/singularityos-lab/atom/internal/control"
 	"github.com/singularityos-lab/atom/internal/core"
 	"github.com/singularityos-lab/atom/internal/unit"
 )
@@ -35,11 +37,40 @@ func Main(args []string) int {
 	}
 
 	return boot(bootConfig{
-		target:     *target,
+		target:     resolveTarget(*target),
 		exitAfter:  *exitAfter,
 		unitDir:    *unitDir,
 		noDefaults: *noDefaults,
 	})
+}
+
+// resolveTarget picks the boot target: an explicit non-default --target wins;
+// otherwise the kernel cmdline (atom.unit= or systemd.unit=) is consulted; else
+// default.target (which the unit tree usually symlinks to graphical.target).
+func resolveTarget(flagTarget string) string {
+	if flagTarget != "" && flagTarget != "default.target" {
+		return flagTarget
+	}
+	if t := cmdlineUnit(); t != "" {
+		return t
+	}
+	return "default.target"
+}
+
+func cmdlineUnit() string {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return ""
+	}
+	for _, tok := range strings.Fields(string(data)) {
+		if v, ok := strings.CutPrefix(tok, "atom.unit="); ok {
+			return v
+		}
+		if v, ok := strings.CutPrefix(tok, "systemd.unit="); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 type bootConfig struct {
@@ -89,6 +120,14 @@ func boot(cfg bootConfig) int {
 		logf("ERROR starting %s: %v", cfg.target, err)
 	}
 	logf("reached %s in %s", cfg.target, time.Since(start).Round(time.Millisecond))
+
+	if srv, err := control.Listen(control.DefaultSocket, m); err != nil {
+		logf("control socket: %v", err)
+	} else {
+		go srv.Serve()
+		defer srv.Close()
+		logf("control socket at %s", control.DefaultSocket)
+	}
 
 	if cfg.exitAfter {
 		logf("exit-after-target set: shutting down")

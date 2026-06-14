@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/singularityos-lab/atom/internal/depgraph"
@@ -170,4 +171,41 @@ func (m *Manager) State(name string) string {
 		return u.Svc.State().String()
 	}
 	return "active"
+}
+
+// UnitStatus is a snapshot of a unit for the control plane.
+type UnitStatus struct {
+	Name  string
+	Kind  string
+	State string
+}
+
+// ListUnits returns every loaded unit's status, sorted by name.
+func (m *Manager) ListUnits() []UnitStatus {
+	out := make([]UnitStatus, 0, len(m.units))
+	for name, u := range m.units {
+		out = append(out, UnitStatus{Name: name, Kind: string(u.Kind), State: m.State(name)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// StartUnit activates a single unit and its dependency closure.
+func (m *Manager) StartUnit(ctx context.Context, name string) error {
+	if _, ok := m.units[name]; !ok {
+		return fmt.Errorf("unknown unit %s", name)
+	}
+	return m.StartTarget(ctx, name)
+}
+
+// StopUnit deactivates a single unit.
+func (m *Manager) StopUnit(ctx context.Context, name string) error {
+	u, ok := m.units[name]
+	if !ok {
+		return fmt.Errorf("unknown unit %s", name)
+	}
+	if u.Svc != nil {
+		return u.Svc.Stop(ctx)
+	}
+	return nil
 }
