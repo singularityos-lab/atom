@@ -8,6 +8,7 @@ import (
 	"github.com/singularityos-lab/atom/internal/atomctl"
 	"github.com/singularityos-lab/atom/internal/pid1"
 	"github.com/singularityos-lab/atom/internal/sessionrun"
+	"github.com/singularityos-lab/atom/internal/socketact"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -45,6 +46,8 @@ func run(argv []string) int {
 		return atomctl.Main(argv[2:])
 	case "run":
 		return sessionrun.Main(argv[2:])
+	case "sd-exec":
+		return socketact.SdExec(argv[2:])
 	case "noop":
 		// A no-op that exits 0, used as ExecStart for synthetic boot-test units
 		// so the test initramfs needs no external binaries.
