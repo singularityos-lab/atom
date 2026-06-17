@@ -25,6 +25,12 @@ type Unit struct {
 type Manager struct {
 	graph *depgraph.Graph
 	units map[string]*Unit
+
+	// OnUnitError, if set, is called for each unit whose start fails. A failing
+	// unit does NOT abort the transaction -- the boot continues, matching systemd
+	// (a failed service does not wedge the boot; only its Requires= dependents
+	// are affected).
+	OnUnitError func(name string, err error)
 }
 
 // Build loads the named units and their dependency closure through loader,
@@ -105,35 +111,29 @@ func (m *Manager) Plan(target string) *depgraph.Plan {
 }
 
 // StartTarget activates target by running each dependency layer to readiness
-// before starting the next; units within a layer start concurrently.
+// before starting the next; units within a layer start concurrently. A unit
+// that fails to start is reported via OnUnitError but does not abort the
+// transaction, so the rest of the boot proceeds.
 func (m *Manager) StartTarget(ctx context.Context, target string) error {
 	plan := m.graph.PlanStart(target)
 	for _, layer := range plan.Layers {
-		if err := m.startLayer(ctx, layer); err != nil {
-			return err
-		}
+		m.startLayer(ctx, layer)
 	}
 	return nil
 }
 
-func (m *Manager) startLayer(ctx context.Context, layer []string) error {
+func (m *Manager) startLayer(ctx context.Context, layer []string) {
 	var wg sync.WaitGroup
-	errs := make(chan error, len(layer))
 	for _, name := range layer {
 		wg.Add(1)
 		go func(n string) {
 			defer wg.Done()
-			errs <- m.startUnit(ctx, n)
+			if err := m.startUnit(ctx, n); err != nil && m.OnUnitError != nil {
+				m.OnUnitError(n, err)
+			}
 		}(name)
 	}
 	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (m *Manager) startUnit(ctx context.Context, name string) error {
@@ -190,12 +190,18 @@ func (m *Manager) ListUnits() []UnitStatus {
 	return out
 }
 
-// StartUnit activates a single unit and its dependency closure.
+// StartUnit activates a single unit and its dependency closure. Unlike a boot
+// transaction it reports the requested unit's own failure to the caller (so
+// atomctl start can surface it).
 func (m *Manager) StartUnit(ctx context.Context, name string) error {
 	if _, ok := m.units[name]; !ok {
 		return fmt.Errorf("unknown unit %s", name)
 	}
-	return m.StartTarget(ctx, name)
+	_ = m.StartTarget(ctx, name)
+	if m.State(name) == "failed" {
+		return fmt.Errorf("%s failed to start", name)
+	}
+	return nil
 }
 
 // StopUnit deactivates a single unit.

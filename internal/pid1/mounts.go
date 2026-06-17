@@ -29,6 +29,23 @@ var apiMounts = []apiMount{
 	{"tmpfs", "/tmp", "tmpfs", syscall.MS_NOSUID | syscall.MS_NODEV, "mode=1777", 0o1777},
 }
 
+// mountProc mounts /proc first, before anything reads /proc/cmdline or
+// /proc/mounts. It is idempotent: an existing /proc (kernel- or initramfs-
+// mounted) is detected and left alone.
+func mountProc(log func(string, ...any)) {
+	if _, err := os.Stat("/proc/self"); err == nil {
+		return // already mounted
+	}
+	if err := os.MkdirAll("/proc", 0o555); err != nil {
+		log("mkdir /proc: %v", err)
+		return
+	}
+	flags := uintptr(syscall.MS_NOSUID | syscall.MS_NOEXEC | syscall.MS_NODEV)
+	if err := syscall.Mount("proc", "/proc", "proc", flags, ""); err != nil && err != syscall.EBUSY {
+		log("mount /proc: %v", err)
+	}
+}
+
 // mountAPIFilesystems mounts the kernel API filesystems that are not already
 // present. It is best-effort: a failure on one mount is logged, not fatal.
 func mountAPIFilesystems(log func(string, ...any)) {

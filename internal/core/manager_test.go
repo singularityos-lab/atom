@@ -71,6 +71,42 @@ func TestOrderedBootViaOneshot(t *testing.T) {
 	}
 }
 
+func TestFailingUnitDoesNotAbortBoot(t *testing.T) {
+	if _, err := os.Stat("/bin/true"); err != nil {
+		t.Skip("no /bin/true")
+	}
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "good.service"),
+		"[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\n")
+	write(t, filepath.Join(dir, "bad.service"), "[Service]\nType=oneshot\n") // no ExecStart -> fails
+	write(t, filepath.Join(dir, "t.target"), "[Unit]\nWants=good.service bad.service\n")
+
+	loader := &unit.Loader{Paths: []string{dir}}
+	m, err := Build(loader, "t.target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failed []string
+	m.OnUnitError = func(n string, e error) { failed = append(failed, n) }
+
+	if err := m.StartTarget(context.Background(), "t.target"); err != nil {
+		t.Fatalf("StartTarget should not abort: %v", err)
+	}
+	// good.service must still come up despite bad.service failing.
+	if m.State("good.service") != "active" {
+		t.Errorf("good.service = %s, want active (a sibling failure must not abort)", m.State("good.service"))
+	}
+	found := false
+	for _, f := range failed {
+		if f == "bad.service" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("bad.service failure not reported via OnUnitError: %v", failed)
+	}
+}
+
 func TestManagerBuildsClosureAndState(t *testing.T) {
 	if _, err := os.Stat("/bin/true"); err != nil {
 		t.Skip("no /bin/true")

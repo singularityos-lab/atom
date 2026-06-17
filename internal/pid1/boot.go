@@ -37,7 +37,7 @@ func Main(args []string) int {
 	}
 
 	return boot(bootConfig{
-		target:     resolveTarget(*target),
+		target:     *target, // resolved in boot() after /proc is mounted
 		exitAfter:  *exitAfter,
 		unitDir:    *unitDir,
 		noDefaults: *noDefaults,
@@ -85,10 +85,14 @@ func logf(format string, a ...any) {
 }
 
 func boot(cfg bootConfig) int {
-	logf("booting, target=%s", cfg.target)
-
 	// Disable Ctrl-Alt-Del triggering an immediate kernel reboot; PID 1 owns it.
 	_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_CAD_OFF)
+
+	// Mount /proc first so the cmdline and the mount table are readable, then
+	// resolve the boot target from the kernel cmdline (atom.unit=).
+	mountProc(logf)
+	cfg.target = resolveTarget(cfg.target)
+	logf("booting, target=%s", cfg.target)
 
 	mountAPIFilesystems(logf)
 	setupCgroupHierarchy()
@@ -111,6 +115,7 @@ func boot(cfg bootConfig) int {
 		logf("FATAL: build transaction for %s: %v", cfg.target, err)
 		return emergency(cfg)
 	}
+	m.OnUnitError = func(name string, err error) { logf("unit %s failed: %v", name, err) }
 
 	plan := m.Plan(cfg.target)
 	logf("transaction: %d units, %d layers", len(plan.Units), len(plan.Layers))
