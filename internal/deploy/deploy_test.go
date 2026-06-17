@@ -25,7 +25,7 @@ func TestRoundTrip(t *testing.T) {
 
 func TestConfirmRestoresAttemptsAndHealth(t *testing.T) {
 	d := NewSingleSlot("h", "v")
-	d.BeginBoot()
+	d.BeginBoot("boot-1")
 	if d.Boot.AttemptsRemaining != 2 || d.Boot.Confirmed {
 		t.Fatalf("after BeginBoot: %+v", d.Boot)
 	}
@@ -46,12 +46,12 @@ func TestShouldRollback(t *testing.T) {
 	d.Boot.MaxAttempts = 2
 	d.Boot.AttemptsRemaining = 2
 
-	// Two unconfirmed boots exhaust the counter.
-	d.BeginBoot()
+	// Two unconfirmed boots (distinct boot_ids) exhaust the counter.
+	d.BeginBoot("b1")
 	if d.ShouldRollback() {
 		t.Error("should not roll back after 1 unconfirmed boot of 2")
 	}
-	d.BeginBoot()
+	d.BeginBoot("b2")
 	if !d.ShouldRollback() {
 		t.Error("should roll back after attempts exhausted with no confirm")
 	}
@@ -60,6 +60,20 @@ func TestShouldRollback(t *testing.T) {
 	d.Confirm("now")
 	if d.ShouldRollback() {
 		t.Error("confirmed boot must not roll back")
+	}
+}
+
+func TestBeginBootIdempotentPerBootID(t *testing.T) {
+	d := NewSingleSlot("h", "v") // MaxAttempts=3, AttemptsRemaining=3
+	d.BeginBoot("same")
+	d.BeginBoot("same") // crash-loop within the same boot
+	d.BeginBoot("same")
+	if d.Boot.AttemptsRemaining != 2 {
+		t.Errorf("attempts = %d, want 2 (one decrement for one boot_id)", d.Boot.AttemptsRemaining)
+	}
+	d.BeginBoot("different")
+	if d.Boot.AttemptsRemaining != 1 {
+		t.Errorf("attempts = %d, want 1 after a new boot_id", d.Boot.AttemptsRemaining)
 	}
 }
 

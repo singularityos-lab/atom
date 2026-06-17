@@ -90,6 +90,19 @@ func neighbors(u *depgraph.Unit) []string {
 	return out
 }
 
+// Critical returns the units annotated X-Atom-BootCritical=yes -- the set the
+// boot-success health gate waits on before confirming the deployment.
+func (m *Manager) Critical() []string {
+	var out []string
+	for name, u := range m.units {
+		if u.File != nil && u.File.Bool("Unit", "X-Atom-BootCritical", false) {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // SetDryRun toggles dry-run on every loaded service (no real exec on start).
 func (m *Manager) SetDryRun(v bool) {
 	for _, u := range m.units {

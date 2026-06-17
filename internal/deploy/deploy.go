@@ -37,6 +37,9 @@ type Boot struct {
 	AttemptsRemaining int    `json:"attempts_remaining"`
 	Confirmed         bool   `json:"confirmed"`
 	LastConfirmedAt   string `json:"last_confirmed_at,omitempty"`
+	// BootID is the kernel boot_id this attempt was counted against, so a
+	// crash-loop within the SAME boot cannot decrement the counter twice.
+	BootID string `json:"boot_id,omitempty"`
 }
 
 // Deployment is the whole document.
@@ -116,11 +119,15 @@ func fsyncDir(dir string) error {
 	return d.Sync()
 }
 
-// BeginBoot records a boot attempt of the current slot: it decrements the
-// attempts counter and clears the confirmed flag. The boot manager
-// (sd-boot bootcount or the initramfs) may do this instead; calling it here is
-// idempotent-safe for a single-slot system where rollback is a no-op.
-func (d *Deployment) BeginBoot() {
+// BeginBoot records a boot attempt of the current slot for the given kernel
+// boot_id: it decrements the attempts counter and clears the confirmed flag.
+// It is idempotent per boot_id -- calling it again within the same boot (e.g. a
+// PID 1 crash-loop) does not decrement twice.
+func (d *Deployment) BeginBoot(bootID string) {
+	if bootID != "" && d.Boot.BootID == bootID {
+		return // already counted this boot
+	}
+	d.Boot.BootID = bootID
 	d.Boot.Confirmed = false
 	if d.Boot.AttemptsRemaining > 0 {
 		d.Boot.AttemptsRemaining--

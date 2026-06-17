@@ -140,6 +140,7 @@ func boot(cfg bootConfig) int {
 		return powerOff()
 	}
 
+	confirmBoot(m)
 	waitForShutdown(m, cfg.target)
 	return 0
 }
