@@ -107,6 +107,46 @@ func TestFailingUnitDoesNotAbortBoot(t *testing.T) {
 	}
 }
 
+func TestMissingEnabledUnitSkipped(t *testing.T) {
+	if _, err := os.Stat("/bin/true"); err != nil {
+		t.Skip("no /bin/true")
+	}
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "real.service"),
+		"[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\n")
+	write(t, filepath.Join(dir, "t.target"), "[Unit]\n")
+	// Enable both via .wants symlink dir, but ghost.service has no unit file.
+	write(t, filepath.Join(dir, "t.target.wants", "real.service"), "")
+	write(t, filepath.Join(dir, "t.target.wants", "ghost.service"), "")
+
+	loader := &unit.Loader{Paths: []string{dir}}
+	m, err := Build(loader, "t.target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	miss := m.Missing()
+	if len(miss) != 1 || miss[0] != "ghost.service" {
+		t.Errorf("Missing() = %v, want [ghost.service]", miss)
+	}
+	if m.State("ghost.service") != "not-found" {
+		t.Errorf("ghost state = %s, want not-found", m.State("ghost.service"))
+	}
+	var failures []string
+	m.OnUnitError = func(n string, e error) { failures = append(failures, n) }
+	if err := m.StartTarget(context.Background(), "t.target"); err != nil {
+		t.Fatal(err)
+	}
+	// The ghost must NOT be reported as a failed start, and real must come up.
+	for _, f := range failures {
+		if f == "ghost.service" {
+			t.Errorf("missing unit reported as a failure (should be skipped): %v", failures)
+		}
+	}
+	if m.State("real.service") != "active" {
+		t.Errorf("real.service = %s, want active", m.State("real.service"))
+	}
+}
+
 func TestManagerBuildsClosureAndState(t *testing.T) {
 	if _, err := os.Stat("/bin/true"); err != nil {
 		t.Skip("no /bin/true")

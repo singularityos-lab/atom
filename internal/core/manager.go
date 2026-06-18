@@ -31,6 +31,10 @@ type Manager struct {
 	// (a failed service does not wedge the boot; only its Requires= dependents
 	// are affected).
 	OnUnitError func(name string, err error)
+
+	// missing tracks units that were pulled in (e.g. via a .wants/.requires
+	// enablement symlink) but have no unit file -- systemd's "unit not found".
+	missing map[string]bool
 }
 
 // Build loads the named units and their dependency closure through loader,
@@ -60,11 +64,20 @@ func Build(loader *unit.Loader, names ...string) (*Manager, error) {
 
 		u := &Unit{Name: n, Kind: f.Type, File: f}
 		if f.Type == unit.TypeService {
-			cfg, err := service.ConfigFromFile(f)
-			if err != nil {
-				return nil, fmt.Errorf("config %s: %w", n, err)
+			if f.Path == "" {
+				// Enabled (via .wants/.requires) but no unit file present:
+				// systemd treats this as "unit not found" and skips it.
+				if m.missing == nil {
+					m.missing = map[string]bool{}
+				}
+				m.missing[n] = true
+			} else {
+				cfg, err := service.ConfigFromFile(f)
+				if err != nil {
+					return nil, fmt.Errorf("config %s: %w", n, err)
+				}
+				u.Svc = service.New(cfg)
 			}
-			u.Svc = service.New(cfg)
 		}
 		m.units[n] = u
 
@@ -180,10 +193,24 @@ func (m *Manager) State(name string) string {
 	if !ok {
 		return "unknown"
 	}
+	if m.missing[name] {
+		return "not-found"
+	}
 	if u.Svc != nil {
 		return u.Svc.State().String()
 	}
 	return "active"
+}
+
+// Missing returns units enabled but lacking a unit file (systemd "not found"),
+// sorted by name.
+func (m *Manager) Missing() []string {
+	out := make([]string, 0, len(m.missing))
+	for n := range m.missing {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // UnitStatus is a snapshot of a unit for the control plane.

@@ -116,6 +116,9 @@ func boot(cfg bootConfig) int {
 		return emergency(cfg)
 	}
 	m.OnUnitError = func(name string, err error) { logf("unit %s failed: %v", name, err) }
+	if miss := m.Missing(); len(miss) > 0 {
+		logf("not found (enabled but no unit file), skipped: %s", strings.Join(miss, " "))
+	}
 
 	plan := m.Plan(cfg.target)
 	logf("transaction: %d units, %d layers", len(plan.Units), len(plan.Layers))
