@@ -13,6 +13,7 @@ import (
 	"github.com/singularityos-lab/atom/internal/cgroup"
 	"github.com/singularityos-lab/atom/internal/control"
 	"github.com/singularityos-lab/atom/internal/core"
+	"github.com/singularityos-lab/atom/internal/logd"
 	"github.com/singularityos-lab/atom/internal/unit"
 )
 
@@ -115,6 +116,7 @@ func boot(cfg bootConfig) int {
 		logf("FATAL: build transaction for %s: %v", cfg.target, err)
 		return emergency(cfg)
 	}
+	m.AttachLogs(logd.NewRegistry(1000))
 	m.OnUnitError = func(name string, err error) { logf("unit %s failed: %v", name, err) }
 	if miss := m.Missing(); len(miss) > 0 {
 		logf("not found (enabled but no unit file), skipped: %s", strings.Join(miss, " "))

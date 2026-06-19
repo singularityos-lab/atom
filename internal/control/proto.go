@@ -29,6 +29,7 @@ type Reply struct {
 	Error string       `json:"error,omitempty"`
 	State string       `json:"state,omitempty"`
 	Units []UnitStatus `json:"units,omitempty"`
+	Lines []string     `json:"lines,omitempty"`
 }
 
 const maxFrame = 8 << 20 // 8 MiB guard

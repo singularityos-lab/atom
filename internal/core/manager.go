@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/singularityos-lab/atom/internal/depgraph"
+	"github.com/singularityos-lab/atom/internal/logd"
 	"github.com/singularityos-lab/atom/internal/service"
 	"github.com/singularityos-lab/atom/internal/unit"
 )
@@ -35,6 +36,30 @@ type Manager struct {
 	// missing tracks units that were pulled in (e.g. via a .wants/.requires
 	// enablement symlink) but have no unit file -- systemd's "unit not found".
 	missing map[string]bool
+
+	// logs, if attached, captures each service's stdout/stderr.
+	logs *logd.Registry
+}
+
+// AttachLogs wires a log registry into every service so stdout/stderr is
+// captured, and makes UnitLogs available to the control plane.
+func (m *Manager) AttachLogs(reg *logd.Registry) {
+	m.logs = reg
+	for name, u := range m.units {
+		if u.Svc != nil {
+			w := reg.Writer(name)
+			u.Svc.Stdout = w
+			u.Svc.Stderr = w
+		}
+	}
+}
+
+// UnitLogs returns a unit's captured log lines.
+func (m *Manager) UnitLogs(name string) []string {
+	if m.logs == nil {
+		return nil
+	}
+	return m.logs.Lines(name)
 }
 
 // Build loads the named units and their dependency closure through loader,

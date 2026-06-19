@@ -68,6 +68,11 @@ func (s *Server) dispatch(conn net.Conn, req Request) Reply {
 			return Reply{Error: "status: unit required"}
 		}
 		return Reply{OK: true, State: s.m.State(req.Unit)}
+	case "logs":
+		if req.Unit == "" {
+			return Reply{Error: "logs: unit required"}
+		}
+		return Reply{OK: true, Lines: s.m.UnitLogs(req.Unit)}
 	case "start", "stop", "restart", "daemon-reload", "boot-confirm":
 		if !s.authorize(conn) {
 			return Reply{Error: "permission denied"}

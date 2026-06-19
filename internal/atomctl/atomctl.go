@@ -51,6 +51,10 @@ func Main(args []string) int {
 		}
 	case "status":
 		fmt.Println(rep.State)
+	case "logs":
+		for _, l := range rep.Lines {
+			fmt.Println(l)
+		}
 	default:
 		fmt.Println("ok")
 	}
