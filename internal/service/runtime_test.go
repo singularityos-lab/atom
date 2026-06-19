@@ -154,6 +154,29 @@ func TestNotifyReadinessGate(t *testing.T) {
 	_ = s.Stop(context.Background())
 }
 
+func TestStartTimeoutOnStuckNotify(t *testing.T) {
+	requireBins(t, "/bin/sleep")
+	rt := t.TempDir()
+	s := New(Config{
+		Name:            "stuck.service",
+		Type:            TypeNotify,
+		RuntimeDir:      rt,
+		ExecStart:       []ExecCommand{cmd(t, "/bin/sleep 30")},
+		TimeoutStartSec: 200 * time.Millisecond,
+	})
+	begin := time.Now()
+	err := s.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected a start-timeout error from a notify service that never sends READY")
+	}
+	if s.State() != Failed {
+		t.Errorf("state = %s, want failed", s.State())
+	}
+	if d := time.Since(begin); d > 3*time.Second {
+		t.Errorf("start took %v, timeout should have fired near 200ms", d)
+	}
+}
+
 func TestConfigFromFile(t *testing.T) {
 	src := `[Service]
 Type=notify

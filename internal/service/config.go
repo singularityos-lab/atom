@@ -88,6 +88,11 @@ type Config struct {
 	// Restart=on-watchdog/on-failure).
 	WatchdogSec time.Duration
 
+	// TimeoutStartSec bounds how long a start may take to reach readiness
+	// (oneshot completion, notify READY=1, forking launcher exit) before the
+	// unit is killed and marked failed. 0 means use DefaultStartTimeout.
+	TimeoutStartSec time.Duration
+
 	// RuntimeDir is the base for the per-service notify socket (default
 	// /run/atom). Overridable so the runtime is testable in a temp dir.
 	RuntimeDir string
@@ -140,5 +145,7 @@ func ConfigFromFile(f *unit.File) (Config, error) {
 	c.StartLimitInterval = f.Duration("Unit", "StartLimitIntervalSec", 10*time.Second)
 	c.StartLimitBurst = int(f.Int("Unit", "StartLimitBurst", 5))
 	c.WatchdogSec = f.Duration("Service", "WatchdogSec", 0)
+	// TimeoutStartSec, falling back to TimeoutSec (which sets both start+stop).
+	c.TimeoutStartSec = f.Duration("Service", "TimeoutStartSec", f.Duration("Service", "TimeoutSec", 0))
 	return c, nil
 }

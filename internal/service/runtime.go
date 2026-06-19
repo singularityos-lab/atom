@@ -45,6 +45,17 @@ func (s State) String() string {
 // DefaultStopTimeout is how long Stop waits after SIGTERM before SIGKILL.
 var DefaultStopTimeout = 5 * time.Second
 
+// DefaultStartTimeout bounds a start that has no explicit TimeoutStartSec, so a
+// service that never signals readiness cannot wedge the boot (systemd default).
+var DefaultStartTimeout = 90 * time.Second
+
+func (s *Service) startTimeout() time.Duration {
+	if s.cfg.TimeoutStartSec > 0 {
+		return s.cfg.TimeoutStartSec
+	}
+	return DefaultStartTimeout
+}
+
 // Service runs and supervises one [Service] unit.
 //
 // Process waiting here uses exec.Cmd.Wait per service, correct when the manager
@@ -139,8 +150,10 @@ func (s *Service) startDry() error {
 }
 
 func (s *Service) startOneshot(ctx context.Context) error {
+	octx, cancel := context.WithTimeout(ctx, s.startTimeout())
+	defer cancel()
 	for _, cmd := range s.cfg.ExecStart {
-		if err := s.runToCompletion(ctx, cmd); err != nil {
+		if err := s.runToCompletion(octx, cmd); err != nil {
 			s.setState(Failed)
 			return fmt.Errorf("%s: ExecStart (oneshot): %w", s.cfg.Name, err)
 		}
@@ -162,7 +175,13 @@ func (s *Service) startLongRunning(ctx context.Context) error {
 	}
 
 	if s.cfg.Type == TypeForking {
-		<-done
+		select {
+		case <-done:
+		case <-time.After(s.startTimeout()):
+			s.killMain()
+			s.setState(Failed)
+			return fmt.Errorf("%s: forking launcher timed out after %s", s.cfg.Name, s.startTimeout())
+		}
 		s.mu.Lock()
 		info := s.lastExit
 		s.mu.Unlock()
@@ -217,9 +236,22 @@ func (s *Service) startNotify(ctx context.Context) error {
 	case <-done:
 		s.setState(Failed)
 		return fmt.Errorf("%s: exited before READY=1", s.cfg.Name)
+	case <-time.After(s.startTimeout()):
+		s.killMain()
+		s.setState(Failed)
+		return fmt.Errorf("%s: start timed out after %s (no READY=1)", s.cfg.Name, s.startTimeout())
 	case <-ctx.Done():
 		s.setState(Failed)
 		return ctx.Err()
+	}
+}
+
+func (s *Service) killMain() {
+	s.mu.Lock()
+	main := s.main
+	s.mu.Unlock()
+	if main != nil && main.Process != nil {
+		_ = main.Process.Kill()
 	}
 }
 
