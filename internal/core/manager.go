@@ -27,11 +27,12 @@ type Manager struct {
 	graph *depgraph.Graph
 	units map[string]*Unit
 
-	// OnUnitError, if set, is called for each unit whose start fails. A failing
-	// unit does NOT abort the transaction -- the boot continues, matching systemd
-	// (a failed service does not wedge the boot; only its Requires= dependents
-	// are affected).
-	OnUnitError func(name string, err error)
+	// OnUnitStart/OnUnitActive/OnUnitError are progress hooks (used for
+	// atom.debug per-unit boot logging). A failing unit does NOT abort the
+	// transaction -- the boot continues, matching systemd.
+	OnUnitStart  func(name string)
+	OnUnitActive func(name string)
+	OnUnitError  func(name string, err error)
 
 	// missing tracks units that were pulled in (e.g. via a .wants/.requires
 	// enablement symlink) but have no unit file -- systemd's "unit not found".
@@ -179,8 +180,15 @@ func (m *Manager) startLayer(ctx context.Context, layer []string) {
 		wg.Add(1)
 		go func(n string) {
 			defer wg.Done()
-			if err := m.startUnit(ctx, n); err != nil && m.OnUnitError != nil {
-				m.OnUnitError(n, err)
+			if m.OnUnitStart != nil {
+				m.OnUnitStart(n)
+			}
+			if err := m.startUnit(ctx, n); err != nil {
+				if m.OnUnitError != nil {
+					m.OnUnitError(n, err)
+				}
+			} else if m.OnUnitActive != nil {
+				m.OnUnitActive(n)
 			}
 		}(name)
 	}

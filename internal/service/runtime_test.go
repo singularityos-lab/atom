@@ -177,6 +177,29 @@ func TestStartTimeoutOnStuckNotify(t *testing.T) {
 	}
 }
 
+func TestExecStartPreTimeout(t *testing.T) {
+	requireBins(t, "/bin/sleep", "/bin/true")
+	// A hanging ExecStartPre must be bounded by TimeoutStartSec -- this is the
+	// wait path that previously ran on an unbounded context and wedged the boot.
+	s := New(Config{
+		Name:            "prehang.service",
+		Type:            TypeOneshot,
+		ExecStartPre:    []ExecCommand{cmd(t, "/bin/sleep 30")},
+		ExecStart:       []ExecCommand{cmd(t, "/bin/true")},
+		TimeoutStartSec: 200 * time.Millisecond,
+	})
+	begin := time.Now()
+	if err := s.Start(context.Background()); err == nil {
+		t.Fatal("a hanging ExecStartPre must time out, not block forever")
+	}
+	if s.State() != Failed {
+		t.Errorf("state = %s, want failed", s.State())
+	}
+	if d := time.Since(begin); d > 3*time.Second {
+		t.Errorf("ExecStartPre timeout took %v, expected ~200ms", d)
+	}
+}
+
 func TestConfigFromFile(t *testing.T) {
 	src := `[Service]
 Type=notify

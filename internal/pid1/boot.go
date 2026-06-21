@@ -28,6 +28,7 @@ func Main(args []string) int {
 	exitAfter := fs.Bool("exit-after-target", false, "power off as soon as the target is reached (for CI boot tests)")
 	unitDir := fs.String("unit-dir", "", "extra unit dir (highest precedence)")
 	noDefaults := fs.Bool("no-default-paths", false, "search only --unit-dir, not the default unit paths")
+	debug := fs.Bool("debug", false, "log per-unit start/active/failed progress")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -42,6 +43,7 @@ func Main(args []string) int {
 		exitAfter:  *exitAfter,
 		unitDir:    *unitDir,
 		noDefaults: *noDefaults,
+		debug:      *debug,
 	})
 }
 
@@ -79,6 +81,21 @@ type bootConfig struct {
 	exitAfter  bool
 	unitDir    string
 	noDefaults bool
+	debug      bool
+}
+
+// cmdlineHas reports whether the kernel cmdline contains the exact token.
+func cmdlineHas(token string) bool {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return false
+	}
+	for _, t := range strings.Fields(string(data)) {
+		if t == token {
+			return true
+		}
+	}
+	return false
 }
 
 func logf(format string, a ...any) {
@@ -98,6 +115,9 @@ func boot(cfg bootConfig) int {
 	// resolve the boot target from the kernel cmdline (atom.unit=).
 	mountProc(logf)
 	cfg.target = resolveTarget(cfg.target)
+	if cmdlineHas("atom.debug=1") {
+		cfg.debug = true
+	}
 	logf("booting, target=%s", cfg.target)
 
 	mountAPIFilesystems(logf)
@@ -123,8 +143,22 @@ func boot(cfg bootConfig) int {
 	}
 	m.AttachLogs(logd.NewRegistry(1000))
 	m.OnUnitError = func(name string, err error) { logf("unit %s failed: %v", name, err) }
+	if cfg.debug {
+		m.OnUnitStart = func(n string) { logf("starting %s", n) }
+		m.OnUnitActive = func(n string) { logf("active %s", n) }
+	}
 	if miss := m.Missing(); len(miss) > 0 {
 		logf("not found (enabled but no unit file), skipped: %s", strings.Join(miss, " "))
+	}
+
+	// Bring the control socket up BEFORE starting the target, so even a wedged
+	// boot stays introspectable via 'atom ctl list-units'.
+	if srv, err := control.Listen(control.DefaultSocket, m); err != nil {
+		logf("control socket: %v", err)
+	} else {
+		go srv.Serve()
+		defer srv.Close()
+		logf("control socket at %s", control.DefaultSocket)
 	}
 
 	plan := m.Plan(cfg.target)
@@ -135,14 +169,6 @@ func boot(cfg bootConfig) int {
 		logf("ERROR starting %s: %v", cfg.target, err)
 	}
 	logf("reached %s in %s", cfg.target, time.Since(start).Round(time.Millisecond))
-
-	if srv, err := control.Listen(control.DefaultSocket, m); err != nil {
-		logf("control socket: %v", err)
-	} else {
-		go srv.Serve()
-		defer srv.Close()
-		logf("control socket at %s", control.DefaultSocket)
-	}
 
 	if cfg.exitAfter {
 		logf("exit-after-target set: shutting down")

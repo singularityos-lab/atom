@@ -122,8 +122,13 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	s.setState(Activating)
 
+	// Bound the ENTIRE start -- ExecStartPre, the readiness wait, and
+	// ExecStartPost -- with TimeoutStartSec, so no wait path can wedge the boot.
+	sctx, cancel := context.WithTimeout(ctx, s.startTimeout())
+	defer cancel()
+
 	for _, pre := range s.cfg.ExecStartPre {
-		if err := s.runToCompletion(ctx, pre); err != nil {
+		if err := s.runToCompletion(sctx, pre); err != nil {
 			s.setState(Failed)
 			return fmt.Errorf("%s: ExecStartPre: %w", s.cfg.Name, err)
 		}
@@ -131,11 +136,11 @@ func (s *Service) Start(ctx context.Context) error {
 
 	switch s.cfg.Type {
 	case TypeOneshot:
-		return s.startOneshot(ctx)
+		return s.startOneshot(sctx)
 	case TypeNotify:
-		return s.startNotify(ctx)
+		return s.startNotify(sctx)
 	default:
-		return s.startLongRunning(ctx)
+		return s.startLongRunning(sctx)
 	}
 }
 
@@ -150,10 +155,8 @@ func (s *Service) startDry() error {
 }
 
 func (s *Service) startOneshot(ctx context.Context) error {
-	octx, cancel := context.WithTimeout(ctx, s.startTimeout())
-	defer cancel()
 	for _, cmd := range s.cfg.ExecStart {
-		if err := s.runToCompletion(octx, cmd); err != nil {
+		if err := s.runToCompletion(ctx, cmd); err != nil {
 			s.setState(Failed)
 			return fmt.Errorf("%s: ExecStart (oneshot): %w", s.cfg.Name, err)
 		}
@@ -177,7 +180,7 @@ func (s *Service) startLongRunning(ctx context.Context) error {
 	if s.cfg.Type == TypeForking {
 		select {
 		case <-done:
-		case <-time.After(s.startTimeout()):
+		case <-ctx.Done():
 			s.killMain()
 			s.setState(Failed)
 			return fmt.Errorf("%s: forking launcher timed out after %s", s.cfg.Name, s.startTimeout())
@@ -190,12 +193,12 @@ func (s *Service) startLongRunning(ctx context.Context) error {
 			return fmt.Errorf("%s: forking launcher failed", s.cfg.Name)
 		}
 		s.setState(Active)
-		s.runPost(context.Background())
+		s.runPost(ctx)
 		return nil
 	}
 
 	s.setState(Active)
-	s.runPost(context.Background())
+	s.runPost(ctx)
 	go s.supervise()
 	return nil
 }
@@ -227,7 +230,7 @@ func (s *Service) startNotify(ctx context.Context) error {
 	select {
 	case <-ready:
 		s.setState(Active)
-		s.runPost(context.Background())
+		s.runPost(ctx)
 		if s.cfg.WatchdogSec > 0 {
 			go s.watchdog()
 		}
@@ -236,13 +239,10 @@ func (s *Service) startNotify(ctx context.Context) error {
 	case <-done:
 		s.setState(Failed)
 		return fmt.Errorf("%s: exited before READY=1", s.cfg.Name)
-	case <-time.After(s.startTimeout()):
+	case <-ctx.Done():
 		s.killMain()
 		s.setState(Failed)
 		return fmt.Errorf("%s: start timed out after %s (no READY=1)", s.cfg.Name, s.startTimeout())
-	case <-ctx.Done():
-		s.setState(Failed)
-		return ctx.Err()
 	}
 }
 
