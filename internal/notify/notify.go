@@ -119,9 +119,24 @@ func (l *Listener) Receive() (Received, error) {
 	if oobn > 0 {
 		if scms, e := syscall.ParseSocketControlMessage(oob[:oobn]); e == nil {
 			for i := range scms {
-				if scms[i].Header.Level == syscall.SOL_SOCKET && scms[i].Header.Type == syscall.SCM_CREDENTIALS {
+				if scms[i].Header.Level != syscall.SOL_SOCKET {
+					continue
+				}
+				switch scms[i].Header.Type {
+				case syscall.SCM_CREDENTIALS:
 					if cred, e2 := syscall.ParseUnixCredentials(&scms[i]); e2 == nil {
 						r.PID, r.UID, r.GID, r.HasCred = int(cred.Pid), cred.Uid, cred.Gid, true
+					}
+				case syscall.SCM_RIGHTS:
+					// sd_notify_barrier (and FDSTORE) pass file descriptors via
+					// SCM_RIGHTS. We don't use them; CLOSING our copies is what
+					// satisfies the barrier -- a sender blocked in sd_notify_barrier
+					// unblocks once the manager closes the pipe fd. Leaking them
+					// (the previous behavior) hung real libsystemd sd_notify.
+					if fds, e2 := syscall.ParseUnixRights(&scms[i]); e2 == nil {
+						for _, fd := range fds {
+							_ = syscall.Close(fd)
+						}
 					}
 				}
 			}
