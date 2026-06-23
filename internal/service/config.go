@@ -77,6 +77,12 @@ type Config struct {
 	NotifyAccess    string
 	PIDFile         string
 
+	// Credentials and managed directories.
+	User             string
+	Group            string
+	RuntimeDirectory []string // created under /run, chown to User
+	StateDirectory   []string // created under /var/lib, chown to User
+
 	// Restart policy and rate limiting.
 	RestartMode        RestartMode
 	RestartSec         time.Duration
@@ -135,6 +141,10 @@ func ConfigFromFile(f *unit.File) (Config, error) {
 		c.Environment = append(c.Environment, strings.Fields(line)...)
 	}
 	c.WorkingDir = f.GetDefault("Service", "WorkingDirectory", "")
+	c.User = f.GetDefault("Service", "User", "")
+	c.Group = f.GetDefault("Service", "Group", "")
+	c.RuntimeDirectory = f.Strv("Service", "RuntimeDirectory")
+	c.StateDirectory = f.Strv("Service", "StateDirectory")
 	c.RemainAfterExit = f.Bool("Service", "RemainAfterExit", false)
 	c.NotifyAccess = f.GetDefault("Service", "NotifyAccess", "main")
 	c.PIDFile = f.GetDefault("Service", "PIDFile", "")

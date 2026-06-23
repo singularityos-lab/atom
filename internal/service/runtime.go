@@ -6,7 +6,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -83,6 +85,8 @@ type Service struct {
 
 	lastPing        time.Time // last WATCHDOG=1 (or spawn) time
 	watchdogPending bool      // a watchdog miss killed the current instance
+
+	cred *syscall.Credential // resolved User=/Group=, applied to spawned procs
 }
 
 // New returns an inactive service for cfg.
@@ -121,6 +125,15 @@ func (s *Service) Start(ctx context.Context) error {
 		return fmt.Errorf("%s: no ExecStart", s.cfg.Name)
 	}
 	s.setState(Activating)
+
+	// Resolve User=/Group= and create RuntimeDirectory/StateDirectory. A User=
+	// that names a missing account fails the unit fast (systemd parity via its
+	// nss userdb is intentionally not reimplemented), rather than silently
+	// running as root.
+	if err := s.prepare(); err != nil {
+		s.setState(Failed)
+		return fmt.Errorf("%s: %w", s.cfg.Name, err)
+	}
 
 	// Bound the ENTIRE start -- ExecStartPre, the readiness wait, and
 	// ExecStartPost -- with TimeoutStartSec, so no wait path can wedge the boot.
@@ -484,7 +497,52 @@ func (s *Service) command(ctx context.Context, ec ExecCommand, extraEnv []string
 	cmd.Stdout = s.Stdout
 	cmd.Stderr = s.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if s.cred != nil {
+		cmd.SysProcAttr.Credential = s.cred
+	}
 	return cmd
+}
+
+// prepare resolves credentials and creates managed directories. It is called
+// once at the start of Start; a failure (e.g. an unresolvable User=) fails the
+// unit fast.
+func (s *Service) prepare() error {
+	if s.cfg.User != "" {
+		u, err := user.Lookup(s.cfg.User)
+		if err != nil {
+			return fmt.Errorf("User=%s: %w", s.cfg.User, err)
+		}
+		uid, _ := strconv.Atoi(u.Uid)
+		gid, _ := strconv.Atoi(u.Gid)
+		s.cred = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+	}
+	if s.cfg.Group != "" {
+		g, err := user.LookupGroup(s.cfg.Group)
+		if err != nil {
+			return fmt.Errorf("Group=%s: %w", s.cfg.Group, err)
+		}
+		gid, _ := strconv.Atoi(g.Gid)
+		if s.cred == nil {
+			s.cred = &syscall.Credential{Uid: 0}
+		}
+		s.cred.Gid = uint32(gid)
+	}
+	for _, d := range s.cfg.RuntimeDirectory {
+		s.makeManagedDir(filepath.Join("/run", d))
+	}
+	for _, d := range s.cfg.StateDirectory {
+		s.makeManagedDir(filepath.Join("/var/lib", d))
+	}
+	return nil
+}
+
+func (s *Service) makeManagedDir(path string) {
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return
+	}
+	if s.cred != nil {
+		_ = os.Chown(path, int(s.cred.Uid), int(s.cred.Gid))
+	}
 }
 
 func (s *Service) notifyPath() string {

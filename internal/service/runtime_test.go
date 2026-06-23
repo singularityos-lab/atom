@@ -200,6 +200,29 @@ func TestExecStartPreTimeout(t *testing.T) {
 	}
 }
 
+func TestUserMissingFailsFast(t *testing.T) {
+	requireBins(t, "/bin/true")
+	// A User= naming an account that does not exist must fail the unit fast
+	// (systemd resolves its own users via nss-systemd; atom does not, so an
+	// unresolvable User= is an error, not a silent run-as-root).
+	s := New(Config{
+		Name:      "u.service",
+		Type:      TypeOneshot,
+		ExecStart: []ExecCommand{cmd(t, "/bin/true")},
+		User:      "atom-no-such-user-zzz",
+	})
+	begin := time.Now()
+	if err := s.Start(context.Background()); err == nil {
+		t.Fatal("a missing User= must fail the unit")
+	}
+	if s.State() != Failed {
+		t.Errorf("state = %s, want failed", s.State())
+	}
+	if d := time.Since(begin); d > 2*time.Second {
+		t.Errorf("missing User= took %v, must fail fast", d)
+	}
+}
+
 func TestConfigFromFile(t *testing.T) {
 	src := `[Service]
 Type=notify

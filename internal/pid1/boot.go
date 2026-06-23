@@ -14,6 +14,7 @@ import (
 	"github.com/singularityos-lab/atom/internal/control"
 	"github.com/singularityos-lab/atom/internal/core"
 	"github.com/singularityos-lab/atom/internal/logd"
+	"github.com/singularityos-lab/atom/internal/service"
 	"github.com/singularityos-lab/atom/internal/unit"
 )
 
@@ -29,8 +30,12 @@ func Main(args []string) int {
 	unitDir := fs.String("unit-dir", "", "extra unit dir (highest precedence)")
 	noDefaults := fs.Bool("no-default-paths", false, "search only --unit-dir, not the default unit paths")
 	debug := fs.Bool("debug", false, "log per-unit start/active/failed progress")
+	defStartTimeout := fs.Duration("default-start-timeout", 0, "override the default per-unit start timeout")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *defStartTimeout > 0 {
+		service.DefaultStartTimeout = *defStartTimeout
 	}
 
 	if os.Getpid() != 1 && !*force {
@@ -84,6 +89,20 @@ type bootConfig struct {
 	debug      bool
 }
 
+// cmdlineValue returns the value of a key=value token on the kernel cmdline.
+func cmdlineValue(key string) string {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return ""
+	}
+	for _, t := range strings.Fields(string(data)) {
+		if v, ok := strings.CutPrefix(t, key+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
 // cmdlineHas reports whether the kernel cmdline contains the exact token.
 func cmdlineHas(token string) bool {
 	data, err := os.ReadFile("/proc/cmdline")
@@ -117,6 +136,12 @@ func boot(cfg bootConfig) int {
 	cfg.target = resolveTarget(cfg.target)
 	if cmdlineHas("atom.debug=1") {
 		cfg.debug = true
+	}
+	if v := cmdlineValue("atom.default-start-timeout"); v != "" {
+		if d, ok := unit.ParseTimeSpan(v); ok && d > 0 {
+			service.DefaultStartTimeout = d
+			logf("default start timeout = %s (from cmdline)", d)
+		}
 	}
 	logf("booting, target=%s", cfg.target)
 
