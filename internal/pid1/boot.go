@@ -14,6 +14,7 @@ import (
 	"github.com/singularityos-lab/atom/internal/control"
 	"github.com/singularityos-lab/atom/internal/core"
 	"github.com/singularityos-lab/atom/internal/logd"
+	"github.com/singularityos-lab/atom/internal/reaper"
 	"github.com/singularityos-lab/atom/internal/service"
 	"github.com/singularityos-lab/atom/internal/unit"
 )
@@ -147,10 +148,13 @@ func boot(cfg bootConfig) int {
 
 	mountAPIFilesystems(logf)
 	setupCgroupHierarchy()
+	seedMachineID(logf)
 
-	reaper := NewReaper(nil)
-	go reaper.Run()
-	defer reaper.Stop()
+	reg := reaper.NewRegistry()
+	service.ReaperWait = reg.Wait
+	rp := reaper.NewReaper(reg)
+	go rp.Run()
+	defer rp.Stop()
 
 	var paths []string
 	if cfg.unitDir != "" {

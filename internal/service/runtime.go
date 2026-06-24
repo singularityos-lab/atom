@@ -284,16 +284,15 @@ func (s *Service) spawnMain() (chan struct{}, error) {
 		return nil, err
 	}
 	done := make(chan struct{})
+	exitCh := s.registerWait(cmd) // register BEFORE the child can be reaped
 	s.mu.Lock()
 	s.main = cmd
 	s.exited = done
 	s.lastPing = time.Now()
 	s.mu.Unlock()
 	go func() {
-		err := cmd.Wait()
+		info := <-exitCh
 		s.mu.Lock()
-		s.exitErr = err
-		info := exitInfoFrom(cmd)
 		if s.watchdogPending {
 			info.Watchdog = true
 			s.watchdogPending = false
@@ -431,12 +430,39 @@ func exitInfoFrom(cmd *exec.Cmd) ExitInfo {
 		return ExitInfo{Code: -1}
 	}
 	if ws, ok := ps.Sys().(syscall.WaitStatus); ok {
-		if ws.Signaled() {
-			return ExitInfo{Signaled: true, Signal: ws.Signal()}
-		}
-		return ExitInfo{Code: ws.ExitStatus()}
+		return exitInfoFromStatus(ws)
 	}
 	return ExitInfo{Code: ps.ExitCode()}
+}
+
+func exitInfoFromStatus(ws syscall.WaitStatus) ExitInfo {
+	if ws.Signaled() {
+		return ExitInfo{Signaled: true, Signal: ws.Signal()}
+	}
+	return ExitInfo{Code: ws.ExitStatus()}
+}
+
+// ReaperWait, when set (by PID 1), is the sole source of child exit statuses:
+// it registers interest in a pid and returns a channel for its WaitStatus. With
+// it set, services do NOT call exec.Cmd.Wait, so the global SIGCHLD reaper does
+// not race them for the status. When nil (tests, session-manager mode), services
+// fall back to exec.Cmd.Wait.
+var ReaperWait func(pid int) <-chan syscall.WaitStatus
+
+// registerWait records interest in the child's exit BEFORE returning (closing
+// the register-vs-exit race) and returns a one-shot channel for its ExitInfo.
+func (s *Service) registerWait(cmd *exec.Cmd) <-chan ExitInfo {
+	out := make(chan ExitInfo, 1)
+	if ReaperWait != nil {
+		ws := ReaperWait(cmd.Process.Pid) // registers synchronously here
+		go func() { out <- exitInfoFromStatus(<-ws) }()
+	} else {
+		go func() {
+			_ = cmd.Wait()
+			out <- exitInfoFrom(cmd)
+		}()
+	}
+	return out
 }
 
 // Stop deactivates the service: ExecStop, then SIGTERM, then SIGKILL on timeout.
@@ -476,9 +502,15 @@ func (s *Service) runPost(ctx context.Context) {
 
 func (s *Service) runToCompletion(ctx context.Context, ec ExecCommand) error {
 	cmd := s.command(ctx, ec, nil)
-	err := cmd.Run()
-	if err != nil && !ec.IgnoreFailure {
+	if err := cmd.Start(); err != nil {
+		if ec.IgnoreFailure {
+			return nil
+		}
 		return err
+	}
+	info := <-s.registerWait(cmd)
+	if !info.Clean() && !ec.IgnoreFailure {
+		return fmt.Errorf("%s: exit code %d (signaled=%v)", ec.Path(), info.Code, info.Signaled)
 	}
 	return nil
 }
