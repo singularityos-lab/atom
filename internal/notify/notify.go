@@ -2,6 +2,7 @@ package notify
 
 import (
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"syscall"
@@ -98,6 +99,12 @@ func NewListener(path string) (*Listener, error) {
 	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
 	if err != nil {
 		return nil, err
+	}
+	// World-writable so a service that setuids away from root (e.g. dbus-daemon
+	// dropping to the dbus user) can still send READY=1. NotifyAccess is matched
+	// by the sender's PID (SO_PASSCRED), never by uid, exactly as systemd does.
+	if !strings.HasPrefix(path, "@") && !strings.HasPrefix(path, "\x00") {
+		_ = os.Chmod(path, 0o666)
 	}
 	if raw, err := conn.SyscallConn(); err == nil {
 		_ = raw.Control(func(fd uintptr) {

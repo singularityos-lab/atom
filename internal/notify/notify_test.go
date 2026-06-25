@@ -24,6 +24,22 @@ func TestParseMessage(t *testing.T) {
 	}
 }
 
+func TestListenerSocketWorldWritable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "n.sock")
+	l, err := NewListener(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm()&0o002 == 0 {
+		t.Errorf("notify socket perms = %o, want world-writable so a privilege-dropped service (e.g. dbus) can send READY", st.Mode().Perm())
+	}
+}
+
 func TestListenerRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "notify.sock")
 	l, err := NewListener(path)
