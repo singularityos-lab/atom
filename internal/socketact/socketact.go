@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -129,6 +130,11 @@ func (s *Socket) Open() ([]*Listener, error) {
 }
 
 func openAddr(a Addr) (*Listener, error) {
+	// Ensure the parent directory of a pathname unix socket exists (e.g.
+	// /run/dbus for dbus.socket) before binding.
+	if (a.Network == "unix" || a.Network == "unixgram") && !strings.HasPrefix(a.Address, "\x00") {
+		_ = os.MkdirAll(filepath.Dir(a.Address), 0o755)
+	}
 	switch a.Kind {
 	case Datagram:
 		pc, err := net.ListenPacket(a.Network, a.Address)

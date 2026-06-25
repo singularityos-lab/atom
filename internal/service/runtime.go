@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/singularityos-lab/atom/internal/notify"
+	"github.com/singularityos-lab/atom/internal/socketact"
 )
 
 // State is the coarse activation state of a service.
@@ -87,7 +88,16 @@ type Service struct {
 	watchdogPending bool      // a watchdog miss killed the current instance
 
 	cred *syscall.Credential // resolved User=/Group=, applied to spawned procs
+
+	// Socket activation: if set, the main process is spawned via the sd-exec
+	// trampoline with these listening fds handed over as LISTEN_FDS.
+	Listeners []*socketact.Listener
+	FDName    string
 }
+
+// SelfExe is the atom binary path re-exec'd for the sd-exec socket-activation
+// trampoline. Overridable in tests.
+var SelfExe = "/proc/self/exe"
 
 // New returns an inactive service for cfg.
 func New(cfg Config) *Service { return &Service{cfg: cfg, state: Inactive} }
@@ -279,7 +289,12 @@ func (s *Service) spawnMain() (chan struct{}, error) {
 			extra = append(extra, fmt.Sprintf("WATCHDOG_USEC=%d", s.cfg.WatchdogSec.Microseconds()))
 		}
 	}
-	cmd := s.command(context.Background(), s.cfg.ExecStart[0], extra)
+	var cmd *exec.Cmd
+	if len(s.Listeners) > 0 {
+		cmd = s.commandActivated(s.cfg.ExecStart[0], extra)
+	} else {
+		cmd = s.command(context.Background(), s.cfg.ExecStart[0], extra)
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -521,14 +536,36 @@ func (s *Service) command(ctx context.Context, ec ExecCommand, extraEnv []string
 		args = ec.Argv[1:]
 	}
 	cmd := exec.CommandContext(ctx, ec.Path(), args...)
-	cmd.Env = append([]string{
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-	}, s.cfg.Environment...)
-	cmd.Env = append(cmd.Env, extraEnv...)
+	cmd.Env = s.baseEnv(extraEnv)
 	cmd.Dir = s.cfg.WorkingDir
 	cmd.Stdout = s.Stdout
 	cmd.Stderr = s.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if s.cred != nil {
+		cmd.SysProcAttr.Credential = s.cred
+	}
+	return cmd
+}
+
+func (s *Service) baseEnv(extra []string) []string {
+	env := append([]string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	}, s.cfg.Environment...)
+	return append(env, extra...)
+}
+
+// commandActivated builds the main-process command for a socket-activated
+// service: it re-execs atom's sd-exec trampoline so the listening fds are
+// handed over as LISTEN_FDS with LISTEN_PID equal to the final service pid.
+func (s *Service) commandActivated(ec ExecCommand, extraEnv []string) *exec.Cmd {
+	cmd := socketact.Command(SelfExe, s.Listeners, s.FDName, ec.Argv, s.baseEnv(extraEnv))
+	cmd.Dir = s.cfg.WorkingDir
+	cmd.Stdout = s.Stdout
+	cmd.Stderr = s.Stderr
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setsid = true
 	if s.cred != nil {
 		cmd.SysProcAttr.Credential = s.cred
 	}

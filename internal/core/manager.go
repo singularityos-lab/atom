@@ -9,6 +9,7 @@ import (
 	"github.com/singularityos-lab/atom/internal/depgraph"
 	"github.com/singularityos-lab/atom/internal/logd"
 	"github.com/singularityos-lab/atom/internal/service"
+	"github.com/singularityos-lab/atom/internal/socketact"
 	"github.com/singularityos-lab/atom/internal/unit"
 )
 
@@ -20,6 +21,10 @@ type Unit struct {
 	Kind unit.Type
 	File *unit.File
 	Svc  *service.Service
+
+	// For .socket units: the parsed socket and its opened listeners.
+	Sock      *socketact.Socket
+	Listeners []*socketact.Listener
 }
 
 // Manager owns the unit set and the graph.
@@ -40,6 +45,9 @@ type Manager struct {
 
 	// logs, if attached, captures each service's stdout/stderr.
 	logs *logd.Registry
+
+	// svcToSocket maps a service name to the .socket unit that activates it.
+	svcToSocket map[string]string
 }
 
 // AttachLogs wires a log registry into every service so stdout/stderr is
@@ -66,7 +74,7 @@ func (m *Manager) UnitLogs(name string) []string {
 // Build loads the named units and their dependency closure through loader,
 // constructing the graph and per-unit runtimes.
 func Build(loader *unit.Loader, names ...string) (*Manager, error) {
-	m := &Manager{graph: depgraph.New(), units: map[string]*Unit{}}
+	m := &Manager{graph: depgraph.New(), units: map[string]*Unit{}, svcToSocket: map[string]string{}}
 
 	queue := append([]string(nil), names...)
 	for len(queue) > 0 {
@@ -103,6 +111,12 @@ func Build(loader *unit.Loader, names ...string) (*Manager, error) {
 					return nil, fmt.Errorf("config %s: %w", n, err)
 				}
 				u.Svc = service.New(cfg)
+			}
+		}
+		if f.Type == unit.TypeSocket && f.Path != "" {
+			if sock, err := socketact.FromFile(f); err == nil {
+				u.Sock = sock
+				m.svcToSocket[sock.Service] = n
 			}
 		}
 		m.units[n] = u
@@ -167,11 +181,33 @@ func (m *Manager) Plan(target string) *depgraph.Plan {
 // that fails to start is reported via OnUnitError but does not abort the
 // transaction, so the rest of the boot proceeds.
 func (m *Manager) StartTarget(ctx context.Context, target string) error {
+	m.openSockets()
 	plan := m.graph.PlanStart(target)
 	for _, layer := range plan.Layers {
 		m.startLayer(ctx, layer)
 	}
 	return nil
+}
+
+// openSockets binds all .socket listeners up front, before any service starts,
+// so a socket-activated service (e.g. dbus.service --systemd-activation) is
+// handed its already-listening fd. Done before the layers to avoid racing a
+// socket's open against its service's start.
+func (m *Manager) openSockets() {
+	for name, u := range m.units {
+		if u.Sock == nil || u.Listeners != nil {
+			continue
+		}
+		ls, err := u.Sock.Open()
+		if err != nil {
+			u.Listeners = []*socketact.Listener{} // mark attempted; do not retry
+			if m.OnUnitError != nil {
+				m.OnUnitError(name, err)
+			}
+			continue
+		}
+		u.Listeners = ls
+	}
 }
 
 func (m *Manager) startLayer(ctx context.Context, layer []string) {
@@ -201,6 +237,13 @@ func (m *Manager) startUnit(ctx context.Context, name string) error {
 		return nil // synthesized / missing: a pure ordering point
 	}
 	if u.Svc != nil {
+		// If a .socket activates this service, hand it the listening fds.
+		if sockName := m.svcToSocket[name]; sockName != "" {
+			if su := m.units[sockName]; su != nil && len(su.Listeners) > 0 {
+				u.Svc.Listeners = su.Listeners
+				u.Svc.FDName = su.Sock.FDName
+			}
+		}
 		return u.Svc.Start(ctx)
 	}
 	return nil // target/slice/etc: no process, readiness is immediate
