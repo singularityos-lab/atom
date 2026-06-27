@@ -17,7 +17,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 BIN="$TMP/atom"
 
-if ! CGO_ENABLED=0 go -C "$ROOT" build -o "$BIN" ./cmd/atom-init; then
+if ! CGO_ENABLED=0 go -C "$ROOT" build -o "$BIN" ./cmd/sinit; then
 	echo "build failed"; exit 1
 fi
 if ! command -v unshare >/dev/null; then

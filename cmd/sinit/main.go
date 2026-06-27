@@ -35,7 +35,7 @@ func run(argv []string) int {
 	}
 
 	if len(argv) < 2 {
-		fmt.Fprintln(os.Stderr, "atom-init: usage: atom-init <init|ctl|version> [args]")
+		fmt.Fprintln(os.Stderr, "sinit: usage: sinit <init|ctl|version> [args]")
 		return 2
 	}
 
@@ -54,10 +54,10 @@ func run(argv []string) int {
 		fmt.Printf("atom noop: %v\n", argv[2:])
 		return 0
 	case "version", "--version", "-v":
-		fmt.Printf("atom-init %s\n", version)
+		fmt.Printf("sinit %s\n", version)
 		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "atom-init: unknown subcommand %q\n", argv[1])
+		fmt.Fprintf(os.Stderr, "sinit: unknown subcommand %q\n", argv[1])
 		return 2
 	}
 }

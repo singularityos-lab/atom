@@ -72,11 +72,12 @@ func cmdlineUnit() string {
 		return ""
 	}
 	for _, tok := range strings.Fields(string(data)) {
-		if v, ok := strings.CutPrefix(tok, "atom.unit="); ok {
-			return v
-		}
-		if v, ok := strings.CutPrefix(tok, "systemd.unit="); ok {
-			return v
+		// sinit.unit= is primary; atom.unit=/systemd.unit= are accepted for
+		// compatibility with existing image bakes.
+		for _, pfx := range []string{"sinit.unit=", "atom.unit=", "systemd.unit="} {
+			if v, ok := strings.CutPrefix(tok, pfx); ok {
+				return v
+			}
 		}
 	}
 	return ""
@@ -135,10 +136,14 @@ func boot(cfg bootConfig) int {
 	// resolve the boot target from the kernel cmdline (atom.unit=).
 	mountProc(logf)
 	cfg.target = resolveTarget(cfg.target)
-	if cmdlineHas("atom.debug=1") {
+	if cmdlineHas("sinit.debug=1") || cmdlineHas("atom.debug=1") {
 		cfg.debug = true
 	}
-	if v := cmdlineValue("atom.default-start-timeout"); v != "" {
+	dst := cmdlineValue("sinit.default-start-timeout")
+	if dst == "" {
+		dst = cmdlineValue("atom.default-start-timeout")
+	}
+	if v := dst; v != "" {
 		if d, ok := unit.ParseTimeSpan(v); ok && d > 0 {
 			service.DefaultStartTimeout = d
 			logf("default start timeout = %s (from cmdline)", d)
