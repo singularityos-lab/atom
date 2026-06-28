@@ -39,6 +39,10 @@ type Manager struct {
 	OnUnitActive func(name string)
 	OnUnitError  func(name string, err error)
 
+	// OnUnitStop reports a unit stopped as a side effect of another unit
+	// starting (Conflicts=), with a short reason. Used for boot logging.
+	OnUnitStop func(name, reason string)
+
 	// missing tracks units that were pulled in (e.g. via a .wants/.requires
 	// enablement symlink) but have no unit file -- systemd's "unit not found".
 	missing map[string]bool
@@ -236,6 +240,9 @@ func (m *Manager) startUnit(ctx context.Context, name string) error {
 	if !ok {
 		return nil // synthesized / missing: a pure ordering point
 	}
+	// Conflicts=: tear down any active unit that conflicts with this one before
+	// it starts (systemd semantics, resolved at activation time).
+	m.stopConflicts(ctx, u)
 	if u.Svc != nil {
 		// If a .socket activates this service, hand it the listening fds.
 		if sockName := m.svcToSocket[name]; sockName != "" {
@@ -330,4 +337,56 @@ func (m *Manager) StopUnit(ctx context.Context, name string) error {
 		return u.Svc.Stop(ctx)
 	}
 	return nil
+}
+
+// conflictTargets returns the units that conflict with u, in both directions:
+// units u lists in Conflicts=, and units that list u in theirs. Conflicts= is
+// symmetric in systemd, so either edge counts.
+func (m *Manager) conflictTargets(u *Unit) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(n string) {
+		if n != "" && n != u.Name && !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	if u.File != nil {
+		for _, c := range u.File.Strv("Unit", "Conflicts") {
+			add(c)
+		}
+	}
+	for name, v := range m.units {
+		if name == u.Name || v.File == nil {
+			continue
+		}
+		for _, c := range v.File.Strv("Unit", "Conflicts") {
+			if c == u.Name {
+				add(name)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// stopConflicts stops any currently-active unit that conflicts with u, before u
+// starts. Service Stop is synchronous through process reap, so a conflicting
+// unit's device holds are released first -- e.g. a boot splash owning DRM master
+// is torn down before the compositor that Conflicts= it starts, letting the
+// compositor become DRM master (the seam logind's session switch used to drive).
+func (m *Manager) stopConflicts(ctx context.Context, u *Unit) {
+	for _, name := range m.conflictTargets(u) {
+		v := m.units[name]
+		if v == nil || v.Svc == nil {
+			continue
+		}
+		switch v.Svc.State() {
+		case service.Active, service.Activating:
+			if m.OnUnitStop != nil {
+				m.OnUnitStop(name, "conflicts "+u.Name)
+			}
+			_ = m.StopUnit(ctx, name)
+		}
+	}
 }

@@ -147,6 +147,47 @@ func TestMissingEnabledUnitSkipped(t *testing.T) {
 	}
 }
 
+// TestConflictStopsActiveUnit proves Conflicts= is enforced at activation: an
+// active unit (a stand-in for the boot splash holding a device) is torn down
+// when a unit that Conflicts= it starts. This is what lets the compositor take
+// DRM master from the splash under sinit, where logind no longer drives it.
+func TestConflictStopsActiveUnit(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "splash.service"),
+		"[Service]\nType=simple\nExecStart=/bin/sh -c 'sleep 30'\n")
+	write(t, filepath.Join(dir, "greetd.service"),
+		"[Unit]\nConflicts=splash.service\nAfter=splash.service\n"+
+			"[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\n")
+	write(t, filepath.Join(dir, "gfx.target"),
+		"[Unit]\nWants=splash.service greetd.service\n")
+
+	loader := &unit.Loader{Paths: []string{dir}}
+	m, err := Build(loader, "gfx.target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stopped []string
+	m.OnUnitStop = func(n, _ string) { stopped = append(stopped, n) }
+	if err := m.StartTarget(context.Background(), "gfx.target"); err != nil {
+		t.Fatal(err)
+	}
+	if st := m.State("splash.service"); st != "inactive" {
+		t.Errorf("splash = %s, want inactive (greetd Conflicts= must stop it)", st)
+	}
+	found := false
+	for _, s := range stopped {
+		if s == "splash.service" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("OnUnitStop not fired for splash: %v", stopped)
+	}
+}
+
 func TestManagerBuildsClosureAndState(t *testing.T) {
 	if _, err := os.Stat("/bin/true"); err != nil {
 		t.Skip("no /bin/true")

@@ -177,6 +177,7 @@ func boot(cfg bootConfig) int {
 	}
 	m.AttachLogs(logd.NewRegistry(1000))
 	m.OnUnitError = func(name string, err error) { logf("unit %s failed: %v", name, err) }
+	m.OnUnitStop = func(name, reason string) { logf("stopped %s (%s)", name, reason) }
 	if cfg.debug {
 		m.OnUnitStart = func(n string) { logf("starting %s", n) }
 		m.OnUnitActive = func(n string) { logf("active %s", n) }
