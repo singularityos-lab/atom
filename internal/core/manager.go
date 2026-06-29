@@ -50,8 +50,10 @@ type Manager struct {
 	// logs, if attached, captures each service's stdout/stderr.
 	logs *logd.Registry
 
-	// svcToSocket maps a service name to the .socket unit that activates it.
-	svcToSocket map[string]string
+	// svcToSockets maps a service name to the .socket units that activate it. A
+	// service can have several (systemd-udevd has control + kernel-netlink +
+	// varlink), and all of their fds are handed over together.
+	svcToSockets map[string][]string
 }
 
 // AttachLogs wires a log registry into every service so stdout/stderr is
@@ -78,7 +80,7 @@ func (m *Manager) UnitLogs(name string) []string {
 // Build loads the named units and their dependency closure through loader,
 // constructing the graph and per-unit runtimes.
 func Build(loader *unit.Loader, names ...string) (*Manager, error) {
-	m := &Manager{graph: depgraph.New(), units: map[string]*Unit{}, svcToSocket: map[string]string{}}
+	m := &Manager{graph: depgraph.New(), units: map[string]*Unit{}, svcToSockets: map[string][]string{}}
 
 	queue := append([]string(nil), names...)
 	for len(queue) > 0 {
@@ -120,7 +122,7 @@ func Build(loader *unit.Loader, names ...string) (*Manager, error) {
 		if f.Type == unit.TypeSocket && f.Path != "" {
 			if sock, err := socketact.FromFile(f); err == nil {
 				u.Sock = sock
-				m.svcToSocket[sock.Service] = n
+				m.svcToSockets[sock.Service] = append(m.svcToSockets[sock.Service], n)
 			}
 		}
 		m.units[n] = u
@@ -245,10 +247,16 @@ func (m *Manager) startUnit(ctx context.Context, name string) error {
 	m.stopConflicts(ctx, u)
 	if u.Svc != nil {
 		// If a .socket activates this service, hand it the listening fds.
-		if sockName := m.svcToSocket[name]; sockName != "" {
-			if su := m.units[sockName]; su != nil && len(su.Listeners) > 0 {
-				u.Svc.Listeners = su.Listeners
-				u.Svc.FDName = su.Sock.FDName
+		if socks := m.svcToSockets[name]; len(socks) > 0 {
+			sort.Strings(socks)
+			var agg []*socketact.Listener
+			for _, sn := range socks {
+				if su := m.units[sn]; su != nil {
+					agg = append(agg, su.Listeners...)
+				}
+			}
+			if len(agg) > 0 {
+				u.Svc.Listeners = agg
 			}
 		}
 		return u.Svc.Start(ctx)

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/singularityos-lab/atom/internal/unit"
 )
@@ -17,13 +18,20 @@ type Kind int
 const (
 	Stream   Kind = iota // ListenStream= (SOCK_STREAM: unix or tcp)
 	Datagram             // ListenDatagram= (SOCK_DGRAM)
+	Netlink              // ListenNetlink= (AF_NETLINK, e.g. kobject-uevent)
 )
 
 // Addr is one parsed listen directive.
 type Addr struct {
 	Kind    Kind
-	Network string // "unix", "tcp", "udp", "unixgram"
-	Address string // path or host:port
+	Network string // "unix", "tcp", "udp", "unixgram", "netlink"
+	Address string // path or host:port (or the raw ListenNetlink= spec)
+	// Netlink-only: protocol family, multicast group mask, and the receive
+	// buffer to force (ReceiveBuffer=), which matters for udev coldplug where a
+	// small buffer drops uevents.
+	NLProto  int
+	NLGroups uint32
+	RcvBuf   int
 }
 
 // Socket is the activation-relevant projection of a .socket unit.
@@ -31,9 +39,10 @@ type Socket struct {
 	Name string
 	// Service is the unit activated on connection. Defaults to the socket's
 	// prefix + ".service".
-	Service string
-	FDName  string // FileDescriptorName=, defaults to the socket name
-	Addrs   []Addr
+	Service       string
+	FDName        string // FileDescriptorName=, defaults to the socket name
+	ReceiveBuffer int    // ReceiveBuffer= in bytes (0 = unset)
+	Addrs         []Addr
 }
 
 // FromFile projects a parsed .socket unit.
@@ -62,7 +71,73 @@ func FromFile(f *unit.File) (*Socket, error) {
 		}
 		s.Addrs = append(s.Addrs, a)
 	}
+	if rb, ok := f.Get("Socket", "ReceiveBuffer"); ok {
+		s.ReceiveBuffer = parseSize(rb)
+	}
+	for _, v := range f.List("Socket", "ListenNetlink") {
+		a, err := parseNetlinkAddr(v)
+		if err != nil {
+			return nil, err
+		}
+		a.RcvBuf = s.ReceiveBuffer
+		s.Addrs = append(s.Addrs, a)
+	}
 	return s, nil
+}
+
+// parseNetlinkAddr parses a ListenNetlink= spec: a family name ("kobject-uevent",
+// "route") or numeric protocol, optionally followed by a multicast group mask.
+func parseNetlinkAddr(v string) (Addr, error) {
+	fields := strings.Fields(v)
+	if len(fields) == 0 {
+		return Addr{}, fmt.Errorf("empty netlink spec")
+	}
+	var proto int
+	switch fields[0] {
+	case "kobject-uevent":
+		proto = 15 // NETLINK_KOBJECT_UEVENT
+	case "route":
+		proto = 0 // NETLINK_ROUTE
+	case "audit":
+		proto = 9 // NETLINK_AUDIT
+	default:
+		n, err := strconv.Atoi(fields[0])
+		if err != nil {
+			return Addr{}, fmt.Errorf("unknown netlink family %q", fields[0])
+		}
+		proto = n
+	}
+	var groups uint32
+	if len(fields) > 1 {
+		g, err := strconv.ParseUint(fields[1], 0, 32)
+		if err != nil {
+			return Addr{}, fmt.Errorf("bad netlink group %q", fields[1])
+		}
+		groups = uint32(g)
+	}
+	return Addr{Kind: Netlink, Network: "netlink", Address: v, NLProto: proto, NLGroups: groups}, nil
+}
+
+// parseSize parses a systemd size like "128M", "64K", "1G" into bytes.
+func parseSize(v string) int {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	mult := 1
+	switch v[len(v)-1] {
+	case 'K', 'k':
+		mult, v = 1<<10, v[:len(v)-1]
+	case 'M', 'm':
+		mult, v = 1<<20, v[:len(v)-1]
+	case 'G', 'g':
+		mult, v = 1<<30, v[:len(v)-1]
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return 0
+	}
+	return n * mult
 }
 
 // parseAddr interprets a Listen* value the way systemd does: an absolute path or
@@ -98,6 +173,7 @@ func parseAddr(v string, kind Kind) (Addr, error) {
 // Listener is an open listening fd plus the means to close it.
 type Listener struct {
 	File   *os.File
+	Name   string // LISTEN_FDNAMES entry for this fd (the socket's FDName)
 	closer func() error
 }
 
@@ -124,6 +200,7 @@ func (s *Socket) Open() ([]*Listener, error) {
 			cleanup()
 			return nil, fmt.Errorf("%s: listen %s %s: %w", s.Name, a.Network, a.Address, err)
 		}
+		l.Name = s.FDName
 		out = append(out, l)
 	}
 	return out, nil
@@ -136,6 +213,8 @@ func openAddr(a Addr) (*Listener, error) {
 		_ = os.MkdirAll(filepath.Dir(a.Address), 0o755)
 	}
 	switch a.Kind {
+	case Netlink:
+		return openNetlink(a)
 	case Datagram:
 		pc, err := net.ListenPacket(a.Network, a.Address)
 		if err != nil {
@@ -182,4 +261,26 @@ func openAddr(a Addr) (*Listener, error) {
 		}
 		return &Listener{File: f, closer: func() error { f.Close(); return ln.Close() }}, nil
 	}
+}
+
+// openNetlink opens and binds an AF_NETLINK socket (e.g. NETLINK_KOBJECT_UEVENT for
+// udev coldplug), forcing the receive buffer so a flood of coldplug uevents is not
+// dropped, and returns it as an inheritable listener fd.
+func openNetlink(a Addr) (*Listener, error) {
+	fd, err := syscall.Socket(syscall.AF_NETLINK, syscall.SOCK_RAW|syscall.SOCK_CLOEXEC, a.NLProto)
+	if err != nil {
+		return nil, err
+	}
+	if a.RcvBuf > 0 {
+		// SO_RCVBUFFORCE bypasses the rmem_max cap (we run as root); fall back to
+		// SO_RCVBUF if it is refused.
+		if e := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUFFORCE, a.RcvBuf); e != nil {
+			_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, a.RcvBuf)
+		}
+	}
+	if err := syscall.Bind(fd, &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK, Groups: a.NLGroups}); err != nil {
+		syscall.Close(fd)
+		return nil, err
+	}
+	return &Listener{File: os.NewFile(uintptr(fd), "netlink:"+a.Address)}, nil
 }
