@@ -73,7 +73,7 @@ func (s *Server) dispatch(conn net.Conn, req Request) Reply {
 			return Reply{Error: "logs: unit required"}
 		}
 		return Reply{OK: true, Lines: s.m.UnitLogs(req.Unit)}
-	case "start", "stop", "restart", "daemon-reload", "boot-confirm":
+	case "start", "stop", "restart", "daemon-reload", "boot-confirm", "reboot", "poweroff", "halt":
 		if !s.authorize(conn) {
 			return Reply{Error: "permission denied"}
 		}
@@ -103,8 +103,26 @@ func (s *Server) mutate(req Request) Reply {
 	case "daemon-reload", "boot-confirm":
 		// Accepted for wire compatibility; unit reload and boot confirmation
 		// are not handled by the init.
+	case "reboot":
+		return s.shutdownAction(syscall.SIGINT) // waitForShutdown maps SIGINT -> reboot
+	case "poweroff", "halt":
+		return s.shutdownAction(syscall.SIGTERM)
 	}
 	return Reply{OK: true, State: s.m.State(req.Unit)}
+}
+
+// shutdownAction asks PID 1 to run its ordered shutdown then reboot(2)/power off.
+// It signals the init (self) so the single tested shutdown path in waitForShutdown
+// runs; it refuses when not running as the init, so a dev/test invocation cannot
+// signal the host's real PID 1.
+func (s *Server) shutdownAction(sig syscall.Signal) Reply {
+	if os.Getpid() != 1 {
+		return Reply{Error: "reboot/poweroff is only available to the init (pid 1)"}
+	}
+	if err := syscall.Kill(1, sig); err != nil {
+		return Reply{Error: err.Error()}
+	}
+	return Reply{OK: true}
 }
 
 // authorize permits mutation only to root or the uid the server runs as,

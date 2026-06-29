@@ -64,5 +64,6 @@ func Main(args []string) int {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: atomctl [--socket PATH] <command> [unit]")
 	fmt.Fprintln(os.Stderr, "commands: list-units, status <unit>, start <unit>, stop <unit>,")
-	fmt.Fprintln(os.Stderr, "          restart <unit>, daemon-reload, boot-confirm")
+	fmt.Fprintln(os.Stderr, "          restart <unit>, daemon-reload, boot-confirm,")
+	fmt.Fprintln(os.Stderr, "          reboot, poweroff, halt")
 }
