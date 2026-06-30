@@ -27,6 +27,10 @@ func run(argv []string) int {
 		return atomctl.Main(argv[1:])
 	case "init":
 		return pid1.Main(argv[1:])
+	case "reboot", "poweroff", "halt":
+		// classic power commands: /usr/bin/{reboot,poweroff,halt} symlinked to this
+		// binary map to the matching atomctl verb, so the shell/DE power path works.
+		return atomctl.Main([]string{base})
 	}
 
 	// Running as PID 1 with no explicit subcommand: this is the boot path.
