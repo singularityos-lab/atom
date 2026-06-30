@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,7 +10,30 @@ import (
 	"github.com/singularityos-lab/atom/internal/pid1"
 	"github.com/singularityos-lab/atom/internal/sessionrun"
 	"github.com/singularityos-lab/atom/internal/socketact"
+	"github.com/singularityos-lab/atom/internal/syslogd"
 )
+
+// runSyslogd runs the minimal system log daemon (journald replacement), as a
+// service under the init: sinit syslogd [--socket /dev/log] [--output FILE].
+func runSyslogd(args []string) int {
+	fs := flag.NewFlagSet("syslogd", flag.ContinueOnError)
+	sock := fs.String("socket", "/dev/log", "datagram socket to serve")
+	out := fs.String("output", "/var/log/messages", "log file to append to")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	s, err := syslogd.New(syslogd.Config{SocketPath: *sock, OutputPath: *out})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sinit syslogd:", err)
+		return 1
+	}
+	defer s.Close()
+	if err := s.Serve(); err != nil {
+		fmt.Fprintln(os.Stderr, "sinit syslogd:", err)
+		return 1
+	}
+	return 0
+}
 
 // version is set at build time via -ldflags "-X main.version=...".
 var version = "dev"
@@ -50,6 +74,8 @@ func run(argv []string) int {
 		return atomctl.Main(argv[2:])
 	case "run":
 		return sessionrun.Main(argv[2:])
+	case "syslogd":
+		return runSyslogd(argv[2:])
 	case "sd-exec":
 		return socketact.SdExec(argv[2:])
 	case "noop":
