@@ -49,6 +49,13 @@ func (l *Loader) Load(name string) (*File, error) {
 	var f *File
 	if path == "" {
 		f = newFile(name)
+	} else if isMasked(path) {
+		// The fragment is masked (symlinked to /dev/null): return an inert,
+		// flagged unit without parsing. systemctl-mask compatibility.
+		f = newFile(name)
+		f.Path = path
+		f.Masked = true
+		return f, nil
 	} else {
 		fh, err := os.Open(path)
 		if err != nil {
@@ -211,6 +218,17 @@ func (l *Loader) linksIn(dirName string) []string {
 		}
 	}
 	return out
+}
+
+// isMasked reports whether the unit fragment at path resolves to /dev/null, the
+// systemd mask convention (`systemctl mask` symlinks the unit to /dev/null). A
+// masked unit is treated as inert and never started.
+func isMasked(path string) bool {
+	rp, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	return rp == "/dev/null"
 }
 
 func fileExists(path string) bool {

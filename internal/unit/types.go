@@ -78,6 +78,11 @@ type File struct {
 	// Path is the file the fragment was loaded from, if any.
 	Path string
 
+	// Masked is true when the fragment resolves to /dev/null (the systemd mask
+	// convention). A masked unit is inert: it is never started and does not pull
+	// in its dependencies.
+	Masked bool
+
 	order    []string
 	sections map[string]*Section
 

@@ -27,14 +27,14 @@ func TestExpandSpecifiers(t *testing.T) {
 		Host: "sinty", Home: "/home/user", RuntimeDir: "/run",
 	}
 	cases := map[string]string{
-		"%n":            "getty@tty1.service",
-		"%p":            "getty",
-		"%i":            "tty1",
-		"agetty %I":     "agetty tty1",
-		"runs in %t":    "runs in /run",
-		"home is %h":    "home is /home/user",
-		"host %H":       "host sinty",
-		"100%% sure":    "100% sure",
+		"%n":               "getty@tty1.service",
+		"%p":               "getty",
+		"%i":               "tty1",
+		"agetty %I":        "agetty tty1",
+		"runs in %t":       "runs in /run",
+		"home is %h":       "home is /home/user",
+		"host %H":          "host sinty",
+		"100%% sure":       "100% sure",
 		"keep %z verbatim": "keep %z verbatim",
 	}
 	for in, want := range cases {

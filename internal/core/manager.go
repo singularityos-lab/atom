@@ -92,6 +92,12 @@ func Build(loader *unit.Loader, names ...string) (*Manager, error) {
 		if err != nil {
 			return nil, fmt.Errorf("load %s: %w", n, err)
 		}
+		if f.Masked {
+			// Masked (fragment -> /dev/null): present but inert, and its
+			// dependencies are NOT pulled in. A .wants link to it is a no-op.
+			m.units[n] = &Unit{Name: n, Kind: f.Type, File: f}
+			continue
+		}
 		du := depgraph.FromFile(f)
 		// Pull in units enabled via <name>.wants/ and <name>.requires/ symlinks
 		// (the systemctl enable mechanism), equivalent to Wants=/Requires=.
