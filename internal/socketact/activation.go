@@ -14,11 +14,11 @@ import (
 // re-execing self as "sd-exec", which sets LISTEN_PID to the final service's pid
 // (impossible to set before fork) and then execs the real service. The listener
 // fds are inherited via ExtraFiles, landing at fd 3, 4, ... in declaration order.
-func Command(self string, listeners []*Listener, svcArgv, env []string) *exec.Cmd {
+func Command(self string, listeners []*Listener, fdName string, svcArgv, env []string) *exec.Cmd {
 	n := len(listeners)
 	names := make([]string, n)
-	for i, l := range listeners {
-		names[i] = l.Name
+	for i := range names {
+		names[i] = fdName
 	}
 	args := append([]string{"sd-exec", strconv.Itoa(n), strings.Join(names, ":"), "--"}, svcArgv...)
 	cmd := exec.Command(self, args...)

@@ -558,7 +558,7 @@ func (s *Service) baseEnv(extra []string) []string {
 // service: it re-execs atom's sd-exec trampoline so the listening fds are
 // handed over as LISTEN_FDS with LISTEN_PID equal to the final service pid.
 func (s *Service) commandActivated(ec ExecCommand, extraEnv []string) *exec.Cmd {
-	cmd := socketact.Command(SelfExe, s.Listeners, ec.Argv, s.baseEnv(extraEnv))
+	cmd := socketact.Command(SelfExe, s.Listeners, s.FDName, ec.Argv, s.baseEnv(extraEnv))
 	cmd.Dir = s.cfg.WorkingDir
 	cmd.Stdout = s.Stdout
 	cmd.Stderr = s.Stderr

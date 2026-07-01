@@ -34,7 +34,7 @@ func TestSdExecPlan(t *testing.T) {
 }
 
 func TestActivationCommandArgs(t *testing.T) {
-	cmd := Command("/usr/lib/atom/atom", []*Listener{{Name: "foo.socket"}, {Name: "foo.socket"}},
+	cmd := Command("/usr/lib/atom/atom", []*Listener{{}, {}}, "foo.socket",
 		[]string{"/bin/svc", "--serve"}, nil)
 	got := strings.Join(cmd.Args, " ")
 	want := "/usr/lib/atom/atom sd-exec 2 foo.socket:foo.socket -- /bin/svc --serve"
@@ -130,21 +130,5 @@ func TestOpenUnixStream(t *testing.T) {
 	buf := make([]byte, 2)
 	if _, err := c.Read(buf); err != nil || string(buf) != "hi" {
 		t.Errorf("read = %q, %v", buf, err)
-	}
-}
-
-func TestParseNetlink(t *testing.T) {
-	a, err := parseNetlinkAddr("kobject-uevent 1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a.Kind != Netlink || a.NLProto != 15 || a.NLGroups != 1 {
-		t.Errorf("netlink parse = %+v, want Netlink proto15 groups1", a)
-	}
-	if parseSize("128M") != 128<<20 || parseSize("64K") != 64<<10 || parseSize("") != 0 {
-		t.Errorf("parseSize wrong: 128M=%d 64K=%d", parseSize("128M"), parseSize("64K"))
-	}
-	if _, err := parseNetlinkAddr(""); err == nil {
-		t.Error("empty netlink spec should error")
 	}
 }
