@@ -124,38 +124,58 @@ func cmdlineHas(token string) bool {
 // tmpfs that a client (e.g. the splash debug overlay) can tail. It is always
 // written, independent of `quiet`, so the on-screen debug toggle can show the
 // logs even when the console stays clean. A var so tests can redirect it.
-var bootLogPath = "/run/atom/boot.log"
+// bootLogPath is the tailable file sink; kmsgPath is the kernel ring buffer. sinit
+// writes its boot lines to BOTH: the file is a persistent tmpfs tail, and /dev/kmsg
+// means the splash debug overlay (which already tails kmsg) shows the atom[1] lines
+// for free, no second source. Both are vars so tests can redirect/disable them.
+var (
+	bootLogPath = "/run/atom/boot.log"
+	kmsgPath    = "/dev/kmsg"
+)
 
 var (
 	logQuiet bool     // set from the `quiet` kernel cmdline token
 	logSink  *os.File // the tailable boot log, opened once /run is mounted
-	logBuf   []string // early lines captured before the sink is open
+	kmsgSink *os.File // the kernel ring buffer, for the debug overlay
+	logBuf   []string // early lines captured before the sinks are open
 )
 
-// openLogSink opens bootLogPath and flushes any lines logged before /run existed.
-// Called once, right after the API filesystems (incl. /run tmpfs) are mounted.
+// openLogSink opens the sinks (file + kmsg) and flushes any lines logged before
+// they existed. Called once, right after the API filesystems (/run, /dev) mount.
 func openLogSink() {
 	_ = os.MkdirAll(filepath.Dir(bootLogPath), 0o755)
-	f, err := os.OpenFile(bootLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return
+	if f, err := os.OpenFile(bootLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+		logSink = f
 	}
-	logSink = f
+	if kmsgPath != "" {
+		if kf, err := os.OpenFile(kmsgPath, os.O_WRONLY, 0); err == nil {
+			kmsgSink = kf
+		}
+	}
 	for _, l := range logBuf {
-		fmt.Fprintln(f, l)
+		writeSinks(l)
 	}
 	logBuf = nil
 }
 
-// logf records a boot line. It ALWAYS goes to the tailable sink (buffered until
-// that opens); it is echoed to the console only when `quiet` is not set, so the
-// screen stays clean while the debug overlay and serial still see everything.
-func logf(format string, a ...any) {
-	line := "atom[1]: " + fmt.Sprintf(format, a...)
+func writeSinks(line string) {
 	if logSink != nil {
 		fmt.Fprintln(logSink, line)
-	} else {
+	}
+	if kmsgSink != nil {
+		fmt.Fprintln(kmsgSink, line)
+	}
+}
+
+// logf records a boot line. It ALWAYS goes to the sinks (buffered until they open),
+// and is echoed to the console only when `quiet` is not set, so the screen stays
+// clean while the overlay, serial and the file still see everything.
+func logf(format string, a ...any) {
+	line := "atom[1]: " + fmt.Sprintf(format, a...)
+	if logSink == nil && kmsgSink == nil {
 		logBuf = append(logBuf, line)
+	} else {
+		writeSinks(line)
 	}
 	if !logQuiet {
 		fmt.Println(line)

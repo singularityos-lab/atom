@@ -11,11 +11,12 @@ import (
 // before it opens, flushed on open), and `quiet` suppresses only the console echo,
 // never the sink -- so the debug overlay/serial still see everything.
 func TestBootLogSinkAndQuiet(t *testing.T) {
-	op, oq, os0, ob := bootLogPath, logQuiet, logSink, logBuf
-	defer func() { bootLogPath, logQuiet, logSink, logBuf = op, oq, os0, ob }()
+	op, ok, oq, os0, oks, ob := bootLogPath, kmsgPath, logQuiet, logSink, kmsgSink, logBuf
+	defer func() { bootLogPath, kmsgPath, logQuiet, logSink, kmsgSink, logBuf = op, ok, oq, os0, oks, ob }()
 
 	bootLogPath = filepath.Join(t.TempDir(), "boot.log")
-	logSink, logBuf, logQuiet = nil, nil, true
+	kmsgPath = "" // do not write to the real /dev/kmsg in tests
+	logSink, kmsgSink, logBuf, logQuiet = nil, nil, nil, true
 
 	logf("early %d", 1) // buffered: sink not open yet
 	openLogSink()       // opens the file and flushes the buffer
