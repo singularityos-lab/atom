@@ -15,6 +15,7 @@ import (
 type Config struct {
 	SocketPath string // datagram socket to serve; default /dev/log
 	OutputPath string // file to append records to; default /var/log/messages
+	KmsgPath   string // kernel ring buffer to tee each record to; default /dev/kmsg (feeds the splash debug overlay). Set to a file in tests.
 	MaxBytes   int64  // truncate-and-restart the file past this size; default 8 MiB
 	// Now is injectable for deterministic tests.
 	Now func() time.Time
@@ -26,6 +27,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.OutputPath == "" {
 		c.OutputPath = "/var/log/messages"
+	}
+	if c.KmsgPath == "" {
+		c.KmsgPath = "/dev/kmsg"
 	}
 	if c.MaxBytes == 0 {
 		c.MaxBytes = 8 << 20
@@ -40,6 +44,7 @@ type Server struct {
 	cfg  Config
 	conn *net.UnixConn
 	out  *os.File
+	kmsg *os.File // best-effort tee to /dev/kmsg; nil if it could not be opened
 	mu   sync.Mutex
 	size int64
 }
@@ -69,8 +74,17 @@ func New(cfg Config) (*Server, error) {
 		conn.Close()
 		return nil, err
 	}
+	// Best-effort tee to the kernel ring buffer so the on-screen debug overlay
+	// (which tails /dev/kmsg) shows service logs alongside kernel + sinit. A
+	// failure here is non-fatal: file logging must not depend on kmsg.
+	var kmsg *os.File
+	if cfg.KmsgPath != "" {
+		if kf, err := os.OpenFile(cfg.KmsgPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+			kmsg = kf
+		}
+	}
 	st, _ := out.Stat()
-	s := &Server{cfg: cfg, conn: conn, out: out}
+	s := &Server{cfg: cfg, conn: conn, out: out, kmsg: kmsg}
 	if st != nil {
 		s.size = st.Size()
 	}
@@ -98,6 +112,9 @@ func (s *Server) Serve() error {
 // Close releases the socket and output file.
 func (s *Server) Close() error {
 	s.conn.Close()
+	if s.kmsg != nil {
+		s.kmsg.Close()
+	}
 	return s.out.Close()
 }
 
@@ -117,6 +134,9 @@ func (s *Server) write(line string) error {
 	}
 	nn, err := s.out.WriteString(line)
 	s.size += int64(nn)
+	if s.kmsg != nil {
+		_, _ = s.kmsg.WriteString(line) // best-effort; ignore kmsg errors
+	}
 	return err
 }
 

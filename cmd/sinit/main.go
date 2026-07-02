@@ -14,15 +14,16 @@ import (
 )
 
 // runSyslogd runs the minimal system log daemon (journald replacement), as a
-// service under the init: sinit syslogd [--socket /dev/log] [--output FILE].
+// service under the init: sinit syslogd [--socket /dev/log] [--output FILE] [--kmsg /dev/kmsg].
 func runSyslogd(args []string) int {
 	fs := flag.NewFlagSet("syslogd", flag.ContinueOnError)
 	sock := fs.String("socket", "/dev/log", "datagram socket to serve")
 	out := fs.String("output", "/var/log/messages", "log file to append to")
+	kmsg := fs.String("kmsg", "/dev/kmsg", "also tee records here for the debug overlay (/dev/null to disable)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	s, err := syslogd.New(syslogd.Config{SocketPath: *sock, OutputPath: *out})
+	s, err := syslogd.New(syslogd.Config{SocketPath: *sock, OutputPath: *out, KmsgPath: *kmsg})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sinit syslogd:", err)
 		return 1
