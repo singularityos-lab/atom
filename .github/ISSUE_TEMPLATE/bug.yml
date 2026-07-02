@@ -1,0 +1,61 @@
+name: Bug report
+description: Something is broken or behaves incorrectly
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Boot and ordering
+        - Unit parsing
+        - Service supervision
+        - Socket activation
+        - atomctl
+        - Logging
+        - Build
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: how-running
+    attributes:
+      label: How are you running it
+      options:
+        - As PID 1 in a VM
+        - As PID 1 in a container
+        - go test only
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit or build
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output from `atomctl logs`, `atomctl status`, the boot console, or `dmesg`. Redact anything private.
+      render: shell
+    validations:
+      required: true
