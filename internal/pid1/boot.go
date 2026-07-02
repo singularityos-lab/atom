@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -119,11 +120,53 @@ func cmdlineHas(token string) bool {
 	return false
 }
 
+// bootLogPath is the on-device live boot log: a plain-text, append-only file on
+// tmpfs that a client (e.g. the splash debug overlay) can tail. It is always
+// written, independent of `quiet`, so the on-screen debug toggle can show the
+// logs even when the console stays clean. A var so tests can redirect it.
+var bootLogPath = "/run/atom/boot.log"
+
+var (
+	logQuiet bool     // set from the `quiet` kernel cmdline token
+	logSink  *os.File // the tailable boot log, opened once /run is mounted
+	logBuf   []string // early lines captured before the sink is open
+)
+
+// openLogSink opens bootLogPath and flushes any lines logged before /run existed.
+// Called once, right after the API filesystems (incl. /run tmpfs) are mounted.
+func openLogSink() {
+	_ = os.MkdirAll(filepath.Dir(bootLogPath), 0o755)
+	f, err := os.OpenFile(bootLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	logSink = f
+	for _, l := range logBuf {
+		fmt.Fprintln(f, l)
+	}
+	logBuf = nil
+}
+
+// logf records a boot line. It ALWAYS goes to the tailable sink (buffered until
+// that opens); it is echoed to the console only when `quiet` is not set, so the
+// screen stays clean while the debug overlay and serial still see everything.
 func logf(format string, a ...any) {
-	fmt.Printf("atom[1]: "+format+"\n", a...)
+	line := "atom[1]: " + fmt.Sprintf(format, a...)
+	if logSink != nil {
+		fmt.Fprintln(logSink, line)
+	} else {
+		logBuf = append(logBuf, line)
+	}
+	if !logQuiet {
+		fmt.Println(line)
+	}
 }
 
 func boot(cfg bootConfig) int {
+	// Honor `quiet`: keep the screen clean (no boot text on the console). The
+	// tailable sink at bootLogPath still records everything for serial/overlay.
+	logQuiet = cmdlineHas("quiet")
+
 	// Disable Ctrl-Alt-Del triggering an immediate kernel reboot; PID 1 owns it.
 	_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_CAD_OFF)
 
@@ -152,6 +195,7 @@ func boot(cfg bootConfig) int {
 	logf("booting, target=%s", cfg.target)
 
 	mountAPIFilesystems(logf)
+	openLogSink() // /run is up now: open the tailable boot log, flush early lines
 	setupCgroupHierarchy()
 	seedMachineID(logf)
 
