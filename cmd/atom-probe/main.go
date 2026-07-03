@@ -18,18 +18,30 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
 const (
 	defaultAddr    = ":2222"
-	defaultCert    = "/etc/atom/probe.crt"
-	defaultKey     = "/etc/atom/probe.key"
-	defaultToken   = "/etc/atom/probe.token"
-	defaultEnable  = "/etc/atom/probe.enabled" // presence = dev/managed policy allows it
+	defaultEnable  = "/etc/atom/probe.enabled" // baked read-only marker: dev/managed policy allows it
 	certValidYears = 10
 )
+
+// probeDir is where the token and TLS material live. It is per-user so the agent
+// runs as the invoking user with no root and no writes to /etc (the dormant,
+// opt-in model): the gate marker in /etc is read-only, everything writable is here.
+func probeDir() string {
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		return filepath.Join(h, ".atom-probe")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("atom-probe-%d", os.Getuid()))
+}
+
+func defTokenPath() string { return filepath.Join(probeDir(), "token") }
+func defCertPath() string  { return filepath.Join(probeDir(), "probe.crt") }
+func defKeyPath() string   { return filepath.Join(probeDir(), "probe.key") }
 
 func main() { os.Exit(run(os.Args[1:])) }
 
@@ -57,7 +69,7 @@ func usage() {
 
 func genToken(args []string) int {
 	fs := flag.NewFlagSet("gen-token", flag.ContinueOnError)
-	path := fs.String("token-file", defaultToken, "where to write the token")
+	path := fs.String("token-file", defTokenPath(), "where to write the token")
 	printTok := fs.Bool("print", false, "also print the token value (to surface it at first boot)")
 	keepExisting := fs.Bool("keep-existing", false, "do nothing if the token file already exists")
 	if err := fs.Parse(args); err != nil {
@@ -71,6 +83,7 @@ func genToken(args []string) int {
 			return 0
 		}
 	}
+	_ = os.MkdirAll(filepath.Dir(*path), 0o700)
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		fmt.Fprintln(os.Stderr, "atom-probe:", err)
@@ -91,9 +104,9 @@ func genToken(args []string) int {
 func serve(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", defaultAddr, "listen address (LAN)")
-	certPath := fs.String("cert", defaultCert, "TLS cert (generated if absent)")
-	keyPath := fs.String("key", defaultKey, "TLS key (generated if absent)")
-	tokenPath := fs.String("token-file", defaultToken, "shared auth token file")
+	certPath := fs.String("cert", defCertPath(), "TLS cert (generated if absent)")
+	keyPath := fs.String("key", defKeyPath(), "TLS key (generated if absent)")
+	tokenPath := fs.String("token-file", defTokenPath(), "shared auth token file")
 	enable := fs.String("enable-marker", defaultEnable, "policy marker that permits serving")
 	dev := fs.Bool("dev", false, "permit serving without the enable marker (dev builds)")
 	if err := fs.Parse(args); err != nil {
@@ -169,7 +182,7 @@ func handleConn(conn net.Conn, token string) {
 func connect(args []string) int {
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	fingerprint := fs.String("fingerprint", "", "expected server cert SHA256 (required unless --insecure)")
-	tokenPath := fs.String("token-file", defaultToken, "shared auth token file")
+	tokenPath := fs.String("token-file", defTokenPath(), "shared auth token file")
 	insecure := fs.Bool("insecure", false, "skip cert pinning (NOT recommended)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -235,6 +248,7 @@ func loadOrGenCert(certPath, keyPath string) (*tls.Certificate, string, error) {
 		sum := sha256.Sum256(c.Certificate[0])
 		return &c, hex.EncodeToString(sum[:]), nil
 	}
+	_ = os.MkdirAll(filepath.Dir(certPath), 0o700)
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, "", err
