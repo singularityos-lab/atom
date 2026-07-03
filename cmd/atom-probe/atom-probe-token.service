@@ -1,0 +1,15 @@
+# First-boot: ensure a per-device token exists and surface it (token + the serve
+# fingerprint print on the console/boot log, so the maintainer grabs them once and
+# relays out of band). Ordered before atom-probe.service. Dev image only.
+[Unit]
+Description=atom-probe first-boot token
+ConditionPathExists=/etc/atom/probe.enabled
+Before=atom-probe.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/atom-probe gen-token --keep-existing --print
+
+[Install]
+WantedBy=multi-user.target

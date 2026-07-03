@@ -58,8 +58,18 @@ func usage() {
 func genToken(args []string) int {
 	fs := flag.NewFlagSet("gen-token", flag.ContinueOnError)
 	path := fs.String("token-file", defaultToken, "where to write the token")
+	printTok := fs.Bool("print", false, "also print the token value (to surface it at first boot)")
+	keepExisting := fs.Bool("keep-existing", false, "do nothing if the token file already exists")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *keepExisting {
+		if b, err := os.ReadFile(*path); err == nil && len(strings.TrimSpace(string(b))) > 0 {
+			if *printTok {
+				fmt.Printf("PROBE TOKEN: %s\n", strings.TrimSpace(string(b)))
+			}
+			return 0
+		}
 	}
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -72,6 +82,9 @@ func genToken(args []string) int {
 		return 1
 	}
 	fmt.Printf("wrote token to %s (mode 0600). Share it with the client out of band.\n", *path)
+	if *printTok {
+		fmt.Printf("PROBE TOKEN: %s\n", tok)
+	}
 	return 0
 }
 
