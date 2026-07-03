@@ -1,0 +1,15 @@
+# Sample unit for the dev/managed remote-access agent. Double-gated: the unit only
+# starts when /etc/atom/probe.enabled exists (ConditionPathExists), and atom-probe
+# itself also refuses without the marker or --dev. NEVER enable on a user image.
+[Unit]
+Description=atom-probe dev/managed remote access agent
+After=network-online.target
+ConditionPathExists=/etc/atom/probe.enabled
+
+[Service]
+ExecStart=/usr/bin/atom-probe serve
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
