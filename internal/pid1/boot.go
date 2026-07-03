@@ -158,6 +158,30 @@ func openLogSink() {
 	logBuf = nil
 }
 
+// Marker paths (vars so tests can redirect them). atomVarMarker is the persistent
+// marker the installer writes on a real /var; installedMarker is the per-boot
+// signal sinit hands to atomd.
+var atomVarMarker = "/var/.atom-var"
+var installedMarker = "/run/atom/installed"
+
+// writeInstalledMarker tells atomd whether this is an installed system or a live
+// boot. The initramfs cannot signal it (sinit remounts /run tmpfs and clobbers
+// anything under it), so sinit derives it here from the persistent /var/.atom-var:
+// present only when the initramfs mounted a real, same-disk /var. A live boot has
+// tmpfs /var without it, so the marker stays absent and OTA stays inert. Written
+// after /run/atom exists, so it survives the initramfs->sinit /run handoff.
+func writeInstalledMarker() {
+	if _, err := os.Stat(atomVarMarker); err != nil {
+		logf("live/uninstalled: %s absent, OTA inert", atomVarMarker)
+		return
+	}
+	if err := os.WriteFile(installedMarker, nil, 0o644); err != nil {
+		logf("installed marker %s: %v", installedMarker, err)
+		return
+	}
+	logf("installed system: wrote %s", installedMarker)
+}
+
 func writeSinks(line string) {
 	if logSink != nil {
 		fmt.Fprintln(logSink, line)
@@ -215,7 +239,8 @@ func boot(cfg bootConfig) int {
 	logf("booting, target=%s", cfg.target)
 
 	mountAPIFilesystems(logf)
-	openLogSink() // /run is up now: open the tailable boot log, flush early lines
+	openLogSink()          // /run is up now: open the tailable boot log, flush early lines
+	writeInstalledMarker() // installed-vs-live signal for atomd (fail-safe: absent = live)
 	setupCgroupHierarchy()
 	seedMachineID(logf)
 
