@@ -26,6 +26,7 @@ import (
 const (
 	defaultAddr    = ":2222"
 	defaultEnable  = "/etc/atom/probe.enabled" // baked read-only marker: dev/managed policy allows it
+	devMarker      = "/etc/atom/dev.enabled"   // the shared dev-image marker also permits it
 	certValidYears = 10
 )
 
@@ -116,8 +117,10 @@ func serve(args []string) int {
 	// Policy gate: never run on a user image. Requires an explicit enable marker
 	// (managed) or --dev (dev build), AND a token.
 	if !*dev {
-		if _, err := os.Stat(*enable); err != nil {
-			fmt.Fprintf(os.Stderr, "atom-probe: refusing to serve: no %s and no --dev (policy gate)\n", *enable)
+		_, e1 := os.Stat(*enable)
+		_, e2 := os.Stat(devMarker)
+		if e1 != nil && e2 != nil {
+			fmt.Fprintf(os.Stderr, "atom-probe: refusing to serve: no %s, no %s, and no --dev (policy gate)\n", *enable, devMarker)
 			return 1
 		}
 	}
