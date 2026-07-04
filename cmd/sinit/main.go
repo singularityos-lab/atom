@@ -56,6 +56,11 @@ func run(argv []string) int {
 		// classic power commands: /usr/bin/{reboot,poweroff,halt} symlinked to this
 		// binary map to the matching atomctl verb, so the shell/DE power path works.
 		return atomctl.Main([]string{base})
+	case "systemctl":
+		// compatibility alias: /usr/bin/systemctl symlinked to this binary maps
+		// systemctl verbs onto atomctl, so muscle memory keeps working once the
+		// real systemd (and its systemctl) is gone.
+		return atomctl.SystemctlShim(argv[1:])
 	}
 
 	// Running as PID 1 with no explicit subcommand: this is the boot path.
