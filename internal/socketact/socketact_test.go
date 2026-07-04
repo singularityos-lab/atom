@@ -2,6 +2,7 @@ package socketact
 
 import (
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -130,5 +131,43 @@ func TestOpenUnixStream(t *testing.T) {
 	buf := make([]byte, 2)
 	if _, err := c.Read(buf); err != nil || string(buf) != "hi" {
 		t.Errorf("read = %q, %v", buf, err)
+	}
+}
+
+func TestSocketModeDefaultAndParse(t *testing.T) {
+	f, _ := unit.Parse("d.socket", strings.NewReader("[Socket]\nListenStream=/run/d.sock\n"))
+	s, _ := FromFile(f)
+	if s.Mode != 0o666 {
+		t.Errorf("default SocketMode = %o, want 0666", s.Mode)
+	}
+	f2, _ := unit.Parse("d.socket", strings.NewReader("[Socket]\nListenStream=/run/d.sock\nSocketMode=0660\n"))
+	s2, _ := FromFile(f2)
+	if s2.Mode != 0o660 {
+		t.Errorf("parsed SocketMode = %o, want 0660", s2.Mode)
+	}
+}
+
+func TestOpenSocketIsConnectable(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "bus.sock")
+	f, _ := unit.Parse("bus.socket", strings.NewReader("[Socket]\nListenStream="+sock+"\n"))
+	s, err := FromFile(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ls, err := s.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for _, l := range ls {
+			l.Close()
+		}
+	}()
+	fi, err := os.Stat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o666 {
+		t.Fatalf("socket perms = %o, want 0666 (non-root must be able to connect)", fi.Mode().Perm())
 	}
 }

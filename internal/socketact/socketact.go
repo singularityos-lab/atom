@@ -32,7 +32,8 @@ type Socket struct {
 	// Service is the unit activated on connection. Defaults to the socket's
 	// prefix + ".service".
 	Service string
-	FDName  string // FileDescriptorName=, defaults to the socket name
+	FDName  string      // FileDescriptorName=, defaults to the socket name
+	Mode    os.FileMode // SocketMode=, applied to pathname sockets (default 0666)
 	Addrs   []Addr
 }
 
@@ -46,6 +47,17 @@ func FromFile(f *unit.File) (*Socket, error) {
 		s.Service = svc
 	} else {
 		s.Service = f.Prefix + ".service"
+	}
+
+	// SocketMode= (octal), defaulting to systemd's 0666 so a pathname socket is
+	// connectable by non-root. Without it net.Listen leaves the socket at the
+	// umask (typically 0755), which is exactly what makes the dbus system bus
+	// unreachable for the user under this init.
+	s.Mode = 0o666
+	if v, ok := f.Get("Socket", "SocketMode"); ok {
+		if m, err := strconv.ParseUint(strings.TrimSpace(v), 8, 32); err == nil {
+			s.Mode = os.FileMode(m)
+		}
 	}
 
 	for _, v := range f.List("Socket", "ListenStream") {
@@ -123,6 +135,9 @@ func (s *Socket) Open() ([]*Listener, error) {
 		if err != nil {
 			cleanup()
 			return nil, fmt.Errorf("%s: listen %s %s: %w", s.Name, a.Network, a.Address, err)
+		}
+		if s.Mode != 0 && (a.Network == "unix" || a.Network == "unixgram") && !strings.HasPrefix(a.Address, "\x00") {
+			_ = os.Chmod(a.Address, s.Mode)
 		}
 		out = append(out, l)
 	}
