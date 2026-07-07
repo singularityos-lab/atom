@@ -47,6 +47,7 @@ func (s *Server) Close() error { return s.ln.Close() }
 
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
+	defer func() { _ = recover() }() // a bad control request must not kill PID 1
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	var req Request
 	if err := readFrame(conn, &req); err != nil {

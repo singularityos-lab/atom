@@ -95,7 +95,12 @@ func (r *Reaper) Run() {
 		case <-r.done:
 			return
 		case <-r.ch:
-			r.drain()
+			// a panic while draining children must never kill PID 1. Recover
+			// per-iteration so the reaper keeps running (a dead reaper = zombie pileup).
+			func() {
+				defer func() { _ = recover() }()
+				r.drain()
+			}()
 		}
 	}
 }

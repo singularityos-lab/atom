@@ -241,6 +241,15 @@ func (m *Manager) startLayer(ctx context.Context, layer []string) {
 		wg.Add(1)
 		go func(n string) {
 			defer wg.Done()
+			// A panic while starting one unit must never kill PID 1: recover and
+			// demote it to a failed unit, so the rest of the boot still proceeds.
+			defer func() {
+				if r := recover(); r != nil {
+					if m.OnUnitError != nil {
+						m.OnUnitError(n, fmt.Errorf("panic starting unit: %v", r))
+					}
+				}
+			}()
 			if m.OnUnitStart != nil {
 				m.OnUnitStart(n)
 			}

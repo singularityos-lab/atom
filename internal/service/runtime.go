@@ -323,6 +323,7 @@ func (s *Service) spawnMain() (chan struct{}, error) {
 // closes ready on the first READY=1 and refreshes the watchdog ping on each
 // WATCHDOG=1. It returns when the listener is closed.
 func (s *Service) notifyReader(l *notify.Listener, ready chan struct{}) {
+	defer func() { _ = recover() }() // sd_notify parsing must not panic PID 1
 	readyClosed := false
 	for {
 		r, err := l.Receive()
@@ -345,6 +346,7 @@ func (s *Service) notifyReader(l *notify.Listener, ready chan struct{}) {
 // resulting exit carries Watchdog=true so supervise can restart it. One
 // watchdog goroutine runs for the service's lifetime.
 func (s *Service) watchdog() {
+	defer func() { _ = recover() }() // never let the watchdog panic kill PID 1
 	iv := s.cfg.WatchdogSec
 	t := time.NewTicker(iv / 2)
 	defer t.Stop()
@@ -370,6 +372,8 @@ func (s *Service) watchdog() {
 // supervise watches the main process and applies the Restart= policy with
 // RestartSec backoff and the start-limit burst guard.
 func (s *Service) supervise() {
+	// a panic in the supervisor goroutine must never take down PID 1.
+	defer func() { _ = recover() }()
 	for {
 		s.mu.Lock()
 		done := s.exited
