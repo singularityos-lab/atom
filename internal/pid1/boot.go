@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -331,13 +332,27 @@ func waitForShutdown(m *core.Manager, target string) {
 	}
 }
 
-// emergency is the last-resort path when the boot transaction cannot even be
-// built; in a real system this would spawn an emergency shell. For now it powers
-// off so a CI boot does not hang.
+// emergency is the last-resort path when the boot transaction cannot even be built.
+// It gives the operator an interactive rescue shell on the console instead of hanging
+// PID 1 forever (a bare select{} would need a hard power cycle to recover). If no
+// console is usable (headless / CI), it powers off after a few failed spawns so the
+// box never spins wedged.
 func emergency(cfg bootConfig) int {
-	logf("emergency: cannot continue")
+	logf("emergency: cannot build the boot transaction; starting a rescue shell")
 	if cfg.exitAfter {
 		return powerOff()
 	}
-	select {} // a real emergency.target would run a shell here
+	fails := 0
+	for fails < 5 {
+		sh := exec.Command("/bin/sh")
+		sh.Stdin, sh.Stdout, sh.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := sh.Run(); err != nil {
+			logf("emergency shell: %v", err)
+			fails++
+			time.Sleep(time.Second)
+			continue
+		}
+		fails = 0 // a clean shell exit: respawn a fresh one for the operator
+	}
+	return powerOff()
 }

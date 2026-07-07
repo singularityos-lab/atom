@@ -90,7 +90,14 @@ func Build(loader *unit.Loader, names ...string) (*Manager, error) {
 
 		f, err := loader.Load(n)
 		if err != nil {
-			return nil, fmt.Errorf("load %s: %w", n, err)
+			// A single unparseable/unreadable unit must NOT abort the whole boot
+			// transaction: as PID 1 that would leave the machine unbootable. Treat it
+			// like a missing unit (skip + mark) so the rest of the target still comes up.
+			if m.missing == nil {
+				m.missing = map[string]bool{}
+			}
+			m.missing[n] = true
+			continue
 		}
 		if f.Masked {
 			// Masked (fragment -> /dev/null): present but inert, and its
@@ -118,9 +125,17 @@ func Build(loader *unit.Loader, names ...string) (*Manager, error) {
 			} else {
 				cfg, err := service.ConfigFromFile(f)
 				if err != nil {
-					return nil, fmt.Errorf("config %s: %w", n, err)
+					// A broken service config (e.g. an unterminated ExecStart quote)
+					// must not abort the boot as PID 1. Mark it missing and leave Svc
+					// nil (inert), exactly like a file-less enabled unit, so the rest
+					// of the target still starts.
+					if m.missing == nil {
+						m.missing = map[string]bool{}
+					}
+					m.missing[n] = true
+				} else {
+					u.Svc = service.New(cfg)
 				}
-				u.Svc = service.New(cfg)
 			}
 		}
 		if f.Type == unit.TypeSocket && f.Path != "" {

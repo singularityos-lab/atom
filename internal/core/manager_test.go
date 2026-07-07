@@ -213,3 +213,33 @@ func TestManagerBuildsClosureAndState(t *testing.T) {
 		t.Errorf("dep state = %s, want active (RemainAfterExit)", st)
 	}
 }
+
+// TestBrokenUnitDoesNotAbortBuild is the regression for a single unit whose
+// config cannot be parsed (here an unterminated ExecStart quote) must NOT make Build
+// return an error. As PID 1 an aborted build hangs the machine unbootable; instead the
+// broken unit is marked missing/inert and the rest of the target still builds + starts.
+func TestBrokenUnitDoesNotAbortBuild(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "broken.service"),
+		"[Service]\nExecStart=/bin/echo \"unterminated\n")
+	write(t, filepath.Join(dir, "t.target"), "[Unit]\n")
+	write(t, filepath.Join(dir, "t.target.wants", "broken.service"), "")
+
+	loader := &unit.Loader{Paths: []string{dir}}
+	m, err := Build(loader, "t.target")
+	if err != nil {
+		t.Fatalf("Build must not fail on one broken unit: %v", err)
+	}
+	found := false
+	for _, x := range m.Missing() {
+		if x == "broken.service" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("broken.service should be marked missing, got Missing()=%v", m.Missing())
+	}
+	if err := m.StartTarget(context.Background(), "t.target"); err != nil {
+		t.Fatalf("StartTarget must not fail on the inert broken unit: %v", err)
+	}
+}
