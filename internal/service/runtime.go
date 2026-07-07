@@ -125,6 +125,22 @@ func (s *Service) setState(st State) {
 	s.mu.Unlock()
 }
 
+// beginStart atomically claims the start. It returns false when the service is
+// already active or activating, so a duplicate or concurrent start -- a boot
+// layer racing a control `start`, or two `start` requests -- cannot spawn a
+// second, unsupervised process that orphans the first. On success the
+// state is Activating and any prior stop flag is cleared.
+func (s *Service) beginStart() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == Active || s.state == Activating {
+		return false
+	}
+	s.state = Activating
+	s.stopping = false
+	return true
+}
+
 // Start activates the service and blocks until it reaches its readiness point.
 func (s *Service) Start(ctx context.Context) error {
 	if s.DryRun {
@@ -134,7 +150,9 @@ func (s *Service) Start(ctx context.Context) error {
 		s.setState(Failed)
 		return fmt.Errorf("%s: no ExecStart", s.cfg.Name)
 	}
-	s.setState(Activating)
+	if !s.beginStart() {
+		return nil // already active or activating: a duplicate start is a no-op
+	}
 
 	// Resolve User=/Group= and create RuntimeDirectory/StateDirectory. A User=
 	// that names a missing account fails the unit fast (systemd parity via its
