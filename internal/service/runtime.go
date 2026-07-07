@@ -295,7 +295,7 @@ func (s *Service) spawnMain() (chan struct{}, error) {
 	} else {
 		cmd = s.command(context.Background(), s.cfg.ExecStart[0], extra)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := s.startCmd(cmd); err != nil {
 		return nil, err
 	}
 	done := make(chan struct{})
@@ -474,7 +474,14 @@ func (s *Service) registerWait(cmd *exec.Cmd) <-chan ExitInfo {
 	out := make(chan ExitInfo, 1)
 	if ReaperWait != nil {
 		ws := ReaperWait(cmd.Process.Pid) // registers synchronously here
-		go func() { out <- exitInfoFromStatus(<-ws) }()
+		go func() {
+			status := <-ws
+			// The global reaper already wait4()'d this pid, so os/exec's Wait() is
+			// never called -- release the Process ourselves to close the pidfd os/exec
+			// opened for it, otherwise every spawn leaks one fd.
+			_ = cmd.Process.Release()
+			out <- exitInfoFromStatus(status)
+		}()
 	} else {
 		go func() {
 			_ = cmd.Wait()
@@ -521,7 +528,7 @@ func (s *Service) runPost(ctx context.Context) {
 
 func (s *Service) runToCompletion(ctx context.Context, ec ExecCommand) error {
 	cmd := s.command(ctx, ec, nil)
-	if err := cmd.Start(); err != nil {
+	if err := s.startCmd(cmd); err != nil {
 		if ec.IgnoreFailure {
 			return nil
 		}
@@ -534,6 +541,70 @@ func (s *Service) runToCompletion(ctx context.Context, ec ExecCommand) error {
 	return nil
 }
 
+// sharedNull is a single, process-wide /dev/null handed to children for stdin and
+// for any nil stdout/stderr. os/exec opens its own /dev/null for a nil std stream
+// and closes it only in Cmd.Wait(); under the reaper Wait() is never called, so
+// giving it an *os.File we own (and never close) avoids one leaked fd per spawn.
+var sharedNull, _ = os.OpenFile(os.DevNull, os.O_RDWR, 0)
+
+// startCmd starts cmd with its std streams wired to fds this process owns.
+//
+// os/exec opens fds for the child's std streams -- a pipe for any stdout/stderr
+// writer that is not an *os.File, and /dev/null for a nil stream -- and closes
+// them only inside Cmd.Wait(). Under PID 1 the global SIGCHLD reaper owns
+// waiting, so Wait() is never called and those fds stay open until a GC
+// finalizer runs. A Restart=always crash-loop then leaks fds per spawn and
+// eventually exhausts the process fd table (EMFILE). We hand os/exec fds we own
+// instead: a shared /dev/null for stdin and nil output, and our own pipe (closed
+// when the child's write end goes away) for a log writer.
+func (s *Service) startCmd(cmd *exec.Cmd) error {
+	if cmd.Stdin == nil && sharedNull != nil {
+		cmd.Stdin = sharedNull
+	}
+	type pipePair struct {
+		r, w *os.File
+		dst  io.Writer
+	}
+	var pipes []pipePair
+	wire := func(w io.Writer) io.Writer {
+		if w == nil {
+			if sharedNull != nil {
+				return sharedNull // our own /dev/null; os/exec won't open (and leak) one
+			}
+			return nil
+		}
+		if _, ok := w.(*os.File); ok {
+			return w // a real file is handed straight to the child; nothing to leak
+		}
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			return w // best effort: fall back to os/exec's own (leaky) pipe
+		}
+		pipes = append(pipes, pipePair{r: pr, w: pw, dst: w})
+		return pw
+	}
+	cmd.Stdout = wire(s.Stdout)
+	if s.Stderr == s.Stdout {
+		cmd.Stderr = cmd.Stdout // merge into the one pipe, matching the default
+	} else {
+		cmd.Stderr = wire(s.Stderr)
+	}
+
+	err := cmd.Start()
+	for _, p := range pipes {
+		p.w.Close() // the parent drops its write end; the child keeps its own dup
+		if err != nil {
+			p.r.Close()
+			continue
+		}
+		go func(p pipePair) {
+			_, _ = io.Copy(p.dst, p.r)
+			p.r.Close()
+		}(p)
+	}
+	return err
+}
+
 func (s *Service) command(ctx context.Context, ec ExecCommand, extraEnv []string) *exec.Cmd {
 	var args []string
 	if len(ec.Argv) > 1 {
@@ -542,8 +613,6 @@ func (s *Service) command(ctx context.Context, ec ExecCommand, extraEnv []string
 	cmd := exec.CommandContext(ctx, ec.Path(), args...)
 	cmd.Env = s.baseEnv(extraEnv)
 	cmd.Dir = s.cfg.WorkingDir
-	cmd.Stdout = s.Stdout
-	cmd.Stderr = s.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if s.cred != nil {
 		cmd.SysProcAttr.Credential = s.cred
@@ -564,8 +633,6 @@ func (s *Service) baseEnv(extra []string) []string {
 func (s *Service) commandActivated(ec ExecCommand, extraEnv []string) *exec.Cmd {
 	cmd := socketact.Command(SelfExe, s.Listeners, s.FDName, ec.Argv, s.baseEnv(extraEnv))
 	cmd.Dir = s.cfg.WorkingDir
-	cmd.Stdout = s.Stdout
-	cmd.Stderr = s.Stderr
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
