@@ -588,6 +588,18 @@ func (s *Service) prepare() error {
 		uid, _ := strconv.Atoi(u.Uid)
 		gid, _ := strconv.Atoi(u.Gid)
 		s.cred = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+		// Supplementary groups: without them a service running as e.g. 'greeter' loses
+		// its video/input/render group memberships (no GPU, no input). Resolve them so
+		// setgroups() sets the full set instead of clearing it to just the primary gid.
+		if gids, e := u.GroupIds(); e == nil {
+			sg := make([]uint32, 0, len(gids))
+			for _, gs := range gids {
+				if n, err2 := strconv.Atoi(gs); err2 == nil {
+					sg = append(sg, uint32(n))
+				}
+			}
+			s.cred.Groups = sg
+		}
 	}
 	if s.cfg.Group != "" {
 		g, err := user.LookupGroup(s.cfg.Group)
