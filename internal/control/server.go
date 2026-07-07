@@ -70,6 +70,12 @@ func (s *Server) dispatch(conn net.Conn, req Request) Reply {
 		}
 		return Reply{OK: true, State: s.m.State(req.Unit)}
 	case "logs":
+		// Captured stdout/stderr can carry secrets, so -- unlike list-units/status,
+		// which expose only unit names and states -- reading logs needs the same
+		// privilege as mutation.
+		if !s.authorize(conn) {
+			return Reply{Error: "permission denied"}
+		}
 		if req.Unit == "" {
 			return Reply{Error: "logs: unit required"}
 		}
