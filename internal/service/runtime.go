@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -88,6 +89,11 @@ type Service struct {
 	watchdogPending bool      // a watchdog miss killed the current instance
 
 	cred *syscall.Credential // resolved User=/Group=, applied to spawned procs
+
+	// forkedPID is the daemon a Type=forking launcher fork()ed, learned from
+	// PIDFile= after the launcher exits. Stop/kill target this, not the dead
+	// launcher.
+	forkedPID int
 
 	// Socket activation: if set, the main process is spawned via the sd-exec
 	// trampoline with these listening fds handed over as LISTEN_FDS.
@@ -233,6 +239,14 @@ func (s *Service) startLongRunning(ctx context.Context) error {
 			s.setState(Failed)
 			return fmt.Errorf("%s: forking launcher failed", s.cfg.Name)
 		}
+		// The launcher has exited; the real daemon is whatever it fork()ed and wrote
+		// to PIDFile=. Learn that pid so Stop/kill hit the daemon, not the dead
+		// launcher. No PIDFile -> we cannot track it (best effort).
+		if pid := s.readPIDFile(ctx); pid > 0 {
+			s.mu.Lock()
+			s.forkedPID = pid
+			s.mu.Unlock()
+		}
 		s.setState(Active)
 		s.runPost(ctx)
 		return nil
@@ -290,10 +304,51 @@ func (s *Service) startNotify(ctx context.Context) error {
 func (s *Service) killMain() {
 	s.mu.Lock()
 	main := s.main
+	forked := s.forkedPID
 	s.mu.Unlock()
+	if forked > 0 {
+		_ = syscall.Kill(forked, syscall.SIGKILL) // Type=forking: the daemon, not the launcher
+		return
+	}
 	if main != nil && main.Process != nil {
 		_ = main.Process.Kill()
 	}
+}
+
+// readPIDFile reads PIDFile= for a Type=forking service. The daemon may write it a
+// moment after the launcher exits, so we retry briefly (bounded by ctx).
+func (s *Service) readPIDFile(ctx context.Context) int {
+	if s.cfg.PIDFile == "" {
+		return 0
+	}
+	for i := 0; i < 20; i++ {
+		if b, err := os.ReadFile(s.cfg.PIDFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
+				return pid
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return 0
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	return 0
+}
+
+// pidAlive reports whether pid still exists (signal 0 probes without delivering).
+func pidAlive(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == nil }
+
+// waitPIDGone polls until pid is reaped or the timeout elapses; returns true if gone.
+func waitPIDGone(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !pidAlive(pid) {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return !pidAlive(pid)
 }
 
 // spawnMain starts ExecStart[0], records the process, and launches a waiter
@@ -515,6 +570,7 @@ func (s *Service) Stop(ctx context.Context) error {
 	s.stopping = true
 	main := s.main
 	exited := s.exited
+	forked := s.forkedPID
 	s.mu.Unlock()
 
 	s.setState(Deactivating)
@@ -522,7 +578,16 @@ func (s *Service) Stop(ctx context.Context) error {
 		_ = s.runToCompletion(ctx, ec)
 	}
 
-	if main != nil && main.Process != nil && exited != nil {
+	if forked > 0 {
+		// Type=forking: the launcher already exited; stop the daemon it fork()ed
+		// (from PIDFile), not the dead launcher. There is no exit channel
+		// for a process we did not spawn, so poll for it to be reaped after each signal.
+		_ = syscall.Kill(forked, syscall.SIGTERM)
+		if !waitPIDGone(forked, DefaultStopTimeout) {
+			_ = syscall.Kill(forked, syscall.SIGKILL)
+			waitPIDGone(forked, DefaultStopTimeout)
+		}
+	} else if main != nil && main.Process != nil && exited != nil {
 		_ = main.Process.Signal(syscall.SIGTERM)
 		select {
 		case <-exited:
