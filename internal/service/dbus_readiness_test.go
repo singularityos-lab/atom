@@ -70,9 +70,11 @@ func TestDbusReadinessBecomesActive(t *testing.T) {
 	_ = s.Stop(context.Background())
 }
 
-// A Type=dbus service whose BusName never appears fails the start once the
-// start timeout elapses -- and does not wedge the boot.
-func TestDbusReadinessTimesOut(t *testing.T) {
+// A Type=dbus service whose BusName never appears must NOT be killed on timeout
+// (sinit has no D-Bus activation to relaunch it; killing a still-running daemon
+// like wpa_supplicant would leave the machine worse off). It proceeds to Active
+// with the process still alive.
+func TestDbusReadinessTimesOutKeepsProcessAlive(t *testing.T) {
 	requireBins(t, "/bin/sleep")
 	startTestBus(t)
 	s := New(Config{
@@ -82,13 +84,17 @@ func TestDbusReadinessTimesOut(t *testing.T) {
 		TimeoutStartSec: 800 * time.Millisecond,
 		ExecStart:       []ExecCommand{cmd(t, "/bin/sleep 30")},
 	})
-	err := s.Start(context.Background())
-	if err == nil {
-		t.Fatal("Start = nil; want failure (bus name never acquired)")
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start = %v; want nil (proceed, do not fail/kill)", err)
 	}
-	if s.State() != Failed {
-		t.Errorf("state = %s, want failed", s.State())
+	if s.State() != Active {
+		t.Errorf("state = %s, want active (process kept alive on timeout)", s.State())
 	}
+	// The daemon must still be running, not killed.
+	if s.State() == Failed {
+		t.Error("service was failed/killed on timeout; must stay alive")
+	}
+	_ = s.Stop(context.Background())
 }
 
 // Type=dbus without a BusName= degrades to simple readiness (active on spawn),

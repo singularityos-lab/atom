@@ -289,10 +289,19 @@ func (s *Service) startDbus(ctx context.Context) error {
 	select {
 	case werr := <-ready:
 		if werr != nil {
-			s.killMain()
-			s.setState(Failed)
-			return fmt.Errorf("%s: bus name %s not acquired within %s: %w",
-				s.cfg.Name, s.cfg.BusName, s.startTimeout(), werr)
+			// The bus name did not appear within the start timeout, but the
+			// process is still ALIVE. Unlike systemd (which fails+kills a
+			// Type=dbus unit on timeout), sinit has no D-Bus activation to
+			// re-launch it, so killing here would leave the machine with the
+			// daemon dead -- e.g. NO wpa_supplicant at all, worse than never
+			// waiting. Keep it running and go Active: dependents may briefly
+			// race, but the daemon is up and its name will appear shortly.
+			fmt.Fprintf(os.Stderr, "sinit: %s: bus name %s not acquired within %s; proceeding without kill\n",
+				s.cfg.Name, s.cfg.BusName, s.startTimeout())
+			s.setState(Active)
+			s.runPost(ctx)
+			go s.supervise()
+			return nil
 		}
 		s.setState(Active)
 		s.runPost(ctx)
