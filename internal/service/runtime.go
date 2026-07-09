@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/singularityos-lab/atom/internal/dbus"
+
 	"github.com/singularityos-lab/atom/internal/notify"
 	"github.com/singularityos-lab/atom/internal/socketact"
 )
@@ -186,6 +188,8 @@ func (s *Service) Start(ctx context.Context) error {
 		return s.startOneshot(sctx)
 	case TypeNotify:
 		return s.startNotify(sctx)
+	case TypeDbus:
+		return s.startDbus(sctx)
 	default:
 		return s.startLongRunning(sctx)
 	}
@@ -256,6 +260,48 @@ func (s *Service) startLongRunning(ctx context.Context) error {
 	s.runPost(ctx)
 	go s.supervise()
 	return nil
+}
+
+// startDbus implements Type=dbus readiness: spawn the daemon, then consider it
+// started only once its well-known BusName is owned on the system bus (bounded
+// by the start timeout, failed if the process dies first). This is what lets an
+// ordering like NetworkManager After=wpa_supplicant actually wait for wpa's
+// fi.w1.wpa_supplicant1 name -- the gap that broke wifi at boot.
+func (s *Service) startDbus(ctx context.Context) error {
+	done, err := s.spawnMain()
+	if err != nil {
+		s.setState(Failed)
+		return fmt.Errorf("%s: %w", s.cfg.Name, err)
+	}
+
+	// No BusName declared: degrade to simple (ready on spawn), matching the old
+	// behaviour so nothing regresses.
+	if s.cfg.BusName == "" {
+		s.setState(Active)
+		s.runPost(ctx)
+		go s.supervise()
+		return nil
+	}
+
+	ready := make(chan error, 1)
+	go func() { ready <- dbus.WaitForName(ctx, s.cfg.BusName, 0) }()
+
+	select {
+	case werr := <-ready:
+		if werr != nil {
+			s.killMain()
+			s.setState(Failed)
+			return fmt.Errorf("%s: bus name %s not acquired within %s: %w",
+				s.cfg.Name, s.cfg.BusName, s.startTimeout(), werr)
+		}
+		s.setState(Active)
+		s.runPost(ctx)
+		go s.supervise()
+		return nil
+	case <-done:
+		s.setState(Failed)
+		return fmt.Errorf("%s: exited before acquiring bus name %s", s.cfg.Name, s.cfg.BusName)
+	}
 }
 
 func (s *Service) startNotify(ctx context.Context) error {

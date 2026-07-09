@@ -76,6 +76,7 @@ type Config struct {
 	RemainAfterExit bool
 	NotifyAccess    string
 	PIDFile         string
+	BusName         string // Type=dbus readiness: the well-known name to wait for
 
 	// Credentials and managed directories.
 	User             string
@@ -148,6 +149,7 @@ func ConfigFromFile(f *unit.File) (Config, error) {
 	c.RemainAfterExit = f.Bool("Service", "RemainAfterExit", false)
 	c.NotifyAccess = f.GetDefault("Service", "NotifyAccess", "main")
 	c.PIDFile = f.GetDefault("Service", "PIDFile", "")
+	c.BusName = f.GetDefault("Service", "BusName", "")
 
 	c.RestartMode = parseRestart(f.GetDefault("Service", "Restart", "no"))
 	c.RestartSec = f.Duration("Service", "RestartSec", 100*time.Millisecond)
