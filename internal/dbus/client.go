@@ -35,6 +35,11 @@ func parseUnixPath(addr string) string {
 	return ""
 }
 
+// opTimeout bounds a single auth/call round-trip so a slow or wedged bus daemon
+// (e.g. mid cold-boot) makes an operation error out and the caller retry with a
+// fresh connection, instead of blocking forever on a deadline-less read.
+const opTimeout = 3 * time.Second
+
 // Conn is an authenticated connection to a message bus.
 type Conn struct {
 	c      net.Conn
@@ -73,6 +78,8 @@ func (c *Conn) Close() error { return c.c.Close() }
 // the hex-encoded uid, expecting OK, then BEGIN. This is the only mechanism the
 // system bus needs from a local root client.
 func (c *Conn) authExternal() error {
+	c.c.SetDeadline(time.Now().Add(opTimeout))
+	defer c.c.SetDeadline(time.Time{})
 	uid := fmt.Sprintf("%d", os.Getuid())
 	hexUID := make([]byte, 0, len(uid)*2)
 	for _, b := range []byte(uid) {
@@ -120,6 +127,8 @@ func (e *enc) sig(s string)  { e.byte(byte(len(s))); e.b = append(e.b, s...); e.
 // argSig/args currently support only a single string argument ("s") or none
 // (""), which is all NameHasOwner/Hello need.
 func (c *Conn) call(dest, path, iface, member, argSig string, arg string) (sig string, body []byte, err error) {
+	c.c.SetDeadline(time.Now().Add(opTimeout))
+	defer c.c.SetDeadline(time.Time{})
 	c.serial++
 	serial := c.serial
 
