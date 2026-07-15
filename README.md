@@ -1,6 +1,6 @@
 # atom
 
-atom is the init and service manager for Singularity OS.
+atom is the init and service manager for Sinty OS.
 
 The binary is `sinit`. Invoked as `atomctl` (a symlink to the same binary) it is the control CLI.
 
