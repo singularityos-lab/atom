@@ -1,0 +1,33 @@
+name: release
+
+# Builds the release binaries on a version tag and attaches them to the GitHub
+# release, so singularity-os fetches them at build time instead of carrying a
+# committed binary. atom-probe is a pure-Go static binary (CGO_ENABLED=0), so it
+# needs no cross toolchain or OS SDK.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build static atom-probe
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o atom-probe ./cmd/atom-probe
+          tar czf "atom-probe-${GITHUB_REF_NAME}-x86_64.tar.gz" atom-probe
+
+      - name: Attach the binary to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: atom-probe-*.tar.gz
