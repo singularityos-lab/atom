@@ -90,6 +90,18 @@ func TestEnabledDeps(t *testing.T) {
 	if len(requires) != 1 || requires[0] != "crit.service" {
 		t.Errorf("requires = %v, want [crit.service]", requires)
 	}
+
+	if err := os.Symlink("/nonexistent/multi-user.target", filepath.Join(dir, "default.target")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "default.target.wants", "foo.service"), "")
+	wants, requires = l.EnabledDeps("default.target")
+	if len(wants) != 2 {
+		t.Errorf("alias wants = %v, want 2 unique units", wants)
+	}
+	if len(requires) != 1 || requires[0] != "crit.service" {
+		t.Errorf("alias requires = %v, want [crit.service]", requires)
+	}
 }
 
 func TestLoaderTemplateInstance(t *testing.T) {

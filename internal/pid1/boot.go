@@ -285,6 +285,15 @@ func boot(cfg bootConfig) int {
 		defer srv.Close()
 		logf("control socket at %s", control.DefaultSocket)
 	}
+	if sdbCfg, err := control.DefaultSDBConfig(); err != nil {
+		logf("sdb control socket: %v", err)
+	} else if srv, err := control.ListenSDB(control.DefaultSDBSocket, m, sdbCfg); err != nil {
+		logf("sdb control socket: %v", err)
+	} else {
+		go srv.Serve()
+		defer srv.Close()
+		logf("sdb control socket at %s", control.DefaultSDBSocket)
+	}
 
 	plan := m.Plan(cfg.target)
 	logf("transaction: %d units, %d layers", len(plan.Units), len(plan.Layers))

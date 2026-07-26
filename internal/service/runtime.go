@@ -152,14 +152,22 @@ func (s *Service) beginStart() bool {
 // Start activates the service and blocks until it reaches its readiness point.
 func (s *Service) Start(ctx context.Context) error {
 	if s.DryRun {
+		if !s.conditionsMet() {
+			s.setState(Inactive)
+			return nil
+		}
 		return s.startDry()
+	}
+	if !s.beginStart() {
+		return nil // already active or activating: a duplicate start is a no-op
+	}
+	if !s.conditionsMet() {
+		s.setState(Inactive)
+		return nil
 	}
 	if len(s.cfg.ExecStart) == 0 {
 		s.setState(Failed)
 		return fmt.Errorf("%s: no ExecStart", s.cfg.Name)
-	}
-	if !s.beginStart() {
-		return nil // already active or activating: a duplicate start is a no-op
 	}
 
 	// Resolve User=/Group= and create RuntimeDirectory/StateDirectory. A User=
@@ -193,6 +201,32 @@ func (s *Service) Start(ctx context.Context) error {
 	default:
 		return s.startLongRunning(sctx)
 	}
+}
+
+func (s *Service) conditionsMet() bool {
+	triggerSeen := false
+	triggerMet := false
+	for _, condition := range s.cfg.ConditionPathExists {
+		path := strings.TrimSpace(condition)
+		trigger := strings.HasPrefix(path, "|")
+		if trigger {
+			triggerSeen = true
+			path = strings.TrimSpace(strings.TrimPrefix(path, "|"))
+		}
+		negated := strings.HasPrefix(path, "!")
+		if negated {
+			path = strings.TrimSpace(strings.TrimPrefix(path, "!"))
+		}
+		_, err := os.Stat(path)
+		exists := err == nil
+		met := exists != negated
+		if trigger {
+			triggerMet = triggerMet || met
+		} else if !met {
+			return false
+		}
+	}
+	return !triggerSeen || triggerMet
 }
 
 func (s *Service) startDry() error {

@@ -147,6 +147,35 @@ func TestMissingEnabledUnitSkipped(t *testing.T) {
 	}
 }
 
+func TestTargetAliasPullsEnabledUnits(t *testing.T) {
+	if _, err := os.Stat("/bin/true"); err != nil {
+		t.Skip("no /bin/true")
+	}
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "graphical.target"), "[Unit]\n")
+	write(t, filepath.Join(dir, "graphical.target.wants", "compositor.service"), "")
+	write(t, filepath.Join(dir, "compositor.service"),
+		"[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\n")
+	if err := os.Symlink("/nonexistent/usr/lib/systemd/system/graphical.target", filepath.Join(dir, "default.target")); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := &unit.Loader{Paths: []string{dir}}
+	m, err := Build(loader, "default.target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.Get("compositor.service"); !ok {
+		t.Fatal("compositor.service not pulled in through graphical.target.wants")
+	}
+	if err := m.StartTarget(context.Background(), "default.target"); err != nil {
+		t.Fatal(err)
+	}
+	if st := m.State("compositor.service"); st != "active" {
+		t.Errorf("compositor.service = %s, want active", st)
+	}
+}
+
 // TestConflictStopsActiveUnit proves Conflicts= is enforced at activation: an
 // active unit (a stand-in for the boot splash holding a device) is torn down
 // when a unit that Conflicts= it starts. This is what lets the compositor take

@@ -224,7 +224,9 @@ func TestUserMissingFailsFast(t *testing.T) {
 }
 
 func TestConfigFromFile(t *testing.T) {
-	src := `[Service]
+	src := `[Unit]
+ConditionPathExists=/run/atom/installed
+[Service]
 Type=notify
 ExecStartPre=/bin/mkdir -p /run/demo
 ExecStart=/usr/bin/demo --serve
@@ -250,5 +252,8 @@ RemainAfterExit=no
 	}
 	if strings.Join(c.Environment, ",") != "FOO=bar,BAZ=qux" {
 		t.Errorf("Environment = %v", c.Environment)
+	}
+	if len(c.ConditionPathExists) != 1 || c.ConditionPathExists[0] != "/run/atom/installed" {
+		t.Errorf("ConditionPathExists = %v", c.ConditionPathExists)
 	}
 }

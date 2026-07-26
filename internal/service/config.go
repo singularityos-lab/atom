@@ -66,6 +66,8 @@ type Config struct {
 	Name string
 	Type Type
 
+	ConditionPathExists []string
+
 	ExecStartPre  []ExecCommand
 	ExecStart     []ExecCommand
 	ExecStartPost []ExecCommand
@@ -137,6 +139,7 @@ func ConfigFromFile(f *unit.File) (Config, error) {
 
 	typeStr, _ := f.Get("Service", "Type")
 	c.Type = parseType(typeStr)
+	c.ConditionPathExists = f.List("Unit", "ConditionPathExists")
 
 	for _, line := range f.List("Service", "Environment") {
 		c.Environment = append(c.Environment, strings.Fields(line)...)

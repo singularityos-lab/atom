@@ -29,8 +29,10 @@ type Unit struct {
 
 // Manager owns the unit set and the graph.
 type Manager struct {
-	graph *depgraph.Graph
-	units map[string]*Unit
+	graph  *depgraph.Graph
+	units  map[string]*Unit
+	loader *unit.Loader
+	mu     sync.RWMutex
 
 	// OnUnitStart/OnUnitActive/OnUnitError are progress hooks (used for
 	// atom.debug per-unit boot logging). A failing unit does NOT abort the
@@ -57,6 +59,8 @@ type Manager struct {
 // AttachLogs wires a log registry into every service so stdout/stderr is
 // captured, and makes UnitLogs available to the control plane.
 func (m *Manager) AttachLogs(reg *logd.Registry) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.logs = reg
 	for name, u := range m.units {
 		if u.Svc != nil {
@@ -69,6 +73,8 @@ func (m *Manager) AttachLogs(reg *logd.Registry) {
 
 // UnitLogs returns a unit's captured log lines.
 func (m *Manager) UnitLogs(name string) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if m.logs == nil {
 		return nil
 	}
@@ -78,7 +84,7 @@ func (m *Manager) UnitLogs(name string) []string {
 // Build loads the named units and their dependency closure through loader,
 // constructing the graph and per-unit runtimes.
 func Build(loader *unit.Loader, names ...string) (*Manager, error) {
-	m := &Manager{graph: depgraph.New(), units: map[string]*Unit{}, svcToSocket: map[string]string{}}
+	m := &Manager{graph: depgraph.New(), units: map[string]*Unit{}, loader: loader, svcToSocket: map[string]string{}}
 
 	queue := append([]string(nil), names...)
 	for len(queue) > 0 {
@@ -171,6 +177,8 @@ func neighbors(u *depgraph.Unit) []string {
 // Critical returns the units annotated X-Atom-BootCritical=yes -- the set the
 // boot-success health gate waits on before confirming the deployment.
 func (m *Manager) Critical() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	var out []string
 	for name, u := range m.units {
 		if u.File != nil && u.File.Bool("Unit", "X-Atom-BootCritical", false) {
@@ -183,6 +191,8 @@ func (m *Manager) Critical() []string {
 
 // SetDryRun toggles dry-run on every loaded service (no real exec on start).
 func (m *Manager) SetDryRun(v bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	for _, u := range m.units {
 		if u.Svc != nil {
 			u.Svc.DryRun = v
@@ -192,12 +202,16 @@ func (m *Manager) SetDryRun(v bool) {
 
 // Get returns a loaded unit by name.
 func (m *Manager) Get(name string) (*Unit, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	u, ok := m.units[name]
 	return u, ok
 }
 
 // Plan exposes the computed start transaction for inspection/tests.
 func (m *Manager) Plan(target string) *depgraph.Plan {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.graph.PlanStart(target)
 }
 
@@ -207,7 +221,9 @@ func (m *Manager) Plan(target string) *depgraph.Plan {
 // transaction, so the rest of the boot proceeds.
 func (m *Manager) StartTarget(ctx context.Context, target string) error {
 	m.openSockets()
+	m.mu.RLock()
 	plan := m.graph.PlanStart(target)
+	m.mu.RUnlock()
 	for _, layer := range plan.Layers {
 		m.startLayer(ctx, layer)
 	}
@@ -219,6 +235,13 @@ func (m *Manager) StartTarget(ctx context.Context, target string) error {
 // handed its already-listening fd. Done before the layers to avoid racing a
 // socket's open against its service's start.
 func (m *Manager) openSockets() {
+	type openError struct {
+		name string
+		err  error
+	}
+	var failures []openError
+
+	m.mu.Lock()
 	for name, u := range m.units {
 		if u.Sock == nil || u.Listeners != nil {
 			continue
@@ -226,12 +249,18 @@ func (m *Manager) openSockets() {
 		ls, err := u.Sock.Open()
 		if err != nil {
 			u.Listeners = []*socketact.Listener{} // mark attempted; do not retry
-			if m.OnUnitError != nil {
-				m.OnUnitError(name, err)
-			}
+			failures = append(failures, openError{name: name, err: err})
 			continue
 		}
 		u.Listeners = ls
+	}
+	hook := m.OnUnitError
+	m.mu.Unlock()
+
+	if hook != nil {
+		for _, failure := range failures {
+			hook(failure.name, failure.err)
+		}
 	}
 }
 
@@ -266,7 +295,14 @@ func (m *Manager) startLayer(ctx context.Context, layer []string) {
 }
 
 func (m *Manager) startUnit(ctx context.Context, name string) error {
+	m.mu.RLock()
 	u, ok := m.units[name]
+	sockName := m.svcToSocket[name]
+	var socketUnit *Unit
+	if sockName != "" {
+		socketUnit = m.units[sockName]
+	}
+	m.mu.RUnlock()
 	if !ok {
 		return nil // synthesized / missing: a pure ordering point
 	}
@@ -275,11 +311,9 @@ func (m *Manager) startUnit(ctx context.Context, name string) error {
 	m.stopConflicts(ctx, u)
 	if u.Svc != nil {
 		// If a .socket activates this service, hand it the listening fds.
-		if sockName := m.svcToSocket[name]; sockName != "" {
-			if su := m.units[sockName]; su != nil && len(su.Listeners) > 0 {
-				u.Svc.Listeners = su.Listeners
-				u.Svc.FDName = su.Sock.FDName
-			}
+		if socketUnit != nil && len(socketUnit.Listeners) > 0 {
+			u.Svc.Listeners = socketUnit.Listeners
+			u.Svc.FDName = socketUnit.Sock.FDName
 		}
 		return u.Svc.Start(ctx)
 	}
@@ -288,10 +322,12 @@ func (m *Manager) startUnit(ctx context.Context, name string) error {
 
 // StopTarget deactivates target in reverse layer order.
 func (m *Manager) StopTarget(ctx context.Context, target string) error {
+	m.mu.RLock()
 	plan := m.graph.PlanStop(target)
+	m.mu.RUnlock()
 	for _, layer := range plan.Layers {
 		for _, name := range layer {
-			if u, ok := m.units[name]; ok && u.Svc != nil {
+			if u, ok := m.Get(name); ok && u.Svc != nil {
 				_ = u.Svc.Stop(ctx)
 			}
 		}
@@ -302,6 +338,23 @@ func (m *Manager) StopTarget(ctx context.Context, target string) error {
 // State reports a unit's state as a string ("active" for passive units once the
 // manager exists; the service state otherwise).
 func (m *Manager) State(name string) string {
+	m.mu.RLock()
+	if _, ok := m.units[name]; ok {
+		state := m.state(name)
+		m.mu.RUnlock()
+		return state
+	}
+	loader := m.loader
+	m.mu.RUnlock()
+	if loader != nil {
+		if f, err := loader.Load(name); err == nil && f.Path != "" {
+			return "inactive"
+		}
+	}
+	return "unknown"
+}
+
+func (m *Manager) state(name string) string {
 	u, ok := m.units[name]
 	if !ok {
 		return "unknown"
@@ -318,6 +371,8 @@ func (m *Manager) State(name string) string {
 // Missing returns units enabled but lacking a unit file (systemd "not found"),
 // sorted by name.
 func (m *Manager) Missing() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	out := make([]string, 0, len(m.missing))
 	for n := range m.missing {
 		out = append(out, n)
@@ -335,9 +390,11 @@ type UnitStatus struct {
 
 // ListUnits returns every loaded unit's status, sorted by name.
 func (m *Manager) ListUnits() []UnitStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	out := make([]UnitStatus, 0, len(m.units))
 	for name, u := range m.units {
-		out = append(out, UnitStatus{Name: name, Kind: string(u.Kind), State: m.State(name)})
+		out = append(out, UnitStatus{Name: name, Kind: string(u.Kind), State: m.state(name)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -347,8 +404,8 @@ func (m *Manager) ListUnits() []UnitStatus {
 // transaction it reports the requested unit's own failure to the caller (so
 // atomctl start can surface it).
 func (m *Manager) StartUnit(ctx context.Context, name string) error {
-	if _, ok := m.units[name]; !ok {
-		return fmt.Errorf("unknown unit %s", name)
+	if err := m.loadUnit(name); err != nil {
+		return err
 	}
 	_ = m.StartTarget(ctx, name)
 	if m.State(name) == "failed" {
@@ -357,9 +414,61 @@ func (m *Manager) StartUnit(ctx context.Context, name string) error {
 	return nil
 }
 
+func (m *Manager) loadUnit(name string) error {
+	m.mu.RLock()
+	_, loaded := m.units[name]
+	missing := m.missing[name]
+	m.mu.RUnlock()
+	if loaded {
+		if missing {
+			return fmt.Errorf("unknown unit %s", name)
+		}
+		return nil
+	}
+
+	added, err := Build(m.loader, name)
+	if err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for n := range added.missing {
+		if m.missing == nil {
+			m.missing = map[string]bool{}
+		}
+		m.missing[n] = true
+	}
+	for n, u := range added.units {
+		if _, exists := m.units[n]; exists {
+			continue
+		}
+		m.units[n] = u
+		if u.File != nil && !u.File.Masked {
+			du := depgraph.FromFile(u.File)
+			wants, requires := m.loader.EnabledDeps(n)
+			du.Wants = append(du.Wants, wants...)
+			du.Requires = append(du.Requires, requires...)
+			m.graph.Add(du)
+		}
+		if u.Svc != nil && m.logs != nil {
+			w := m.logs.Writer(n)
+			u.Svc.Stdout = w
+			u.Svc.Stderr = w
+		}
+	}
+	for serviceName, socketName := range added.svcToSocket {
+		m.svcToSocket[serviceName] = socketName
+	}
+	if m.missing[name] {
+		return fmt.Errorf("unknown unit %s", name)
+	}
+	return nil
+}
+
 // StopUnit deactivates a single unit.
 func (m *Manager) StopUnit(ctx context.Context, name string) error {
-	u, ok := m.units[name]
+	u, ok := m.Get(name)
 	if !ok {
 		return fmt.Errorf("unknown unit %s", name)
 	}
@@ -373,6 +482,8 @@ func (m *Manager) StopUnit(ctx context.Context, name string) error {
 // units u lists in Conflicts=, and units that list u in theirs. Conflicts= is
 // symmetric in systemd, so either edge counts.
 func (m *Manager) conflictTargets(u *Unit) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	seen := map[string]bool{}
 	var out []string
 	add := func(n string) {
@@ -407,7 +518,7 @@ func (m *Manager) conflictTargets(u *Unit) []string {
 // compositor become DRM master (the seam logind's session switch used to drive).
 func (m *Manager) stopConflicts(ctx context.Context, u *Unit) {
 	for _, name := range m.conflictTargets(u) {
-		v := m.units[name]
+		v, _ := m.Get(name)
 		if v == nil || v.Svc == nil {
 			continue
 		}

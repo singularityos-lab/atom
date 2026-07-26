@@ -196,24 +196,53 @@ func (l *Loader) specifiersFor(f *File) Specifiers {
 // these directories is equivalent to a Wants=/Requires= on the target, and is
 // how most services are pulled into a boot target.
 func (l *Loader) EnabledDeps(name string) (wants, requires []string) {
-	return l.linksIn(name + ".wants"), l.linksIn(name + ".requires")
+	names := []string{name}
+	if alias := l.aliasTarget(name); alias != name {
+		names = append(names, alias)
+	}
+	var wantDirs, requireDirs []string
+	for _, n := range names {
+		wantDirs = append(wantDirs, n+".wants")
+		requireDirs = append(requireDirs, n+".requires")
+	}
+	return l.linksIn(wantDirs...), l.linksIn(requireDirs...)
 }
 
-func (l *Loader) linksIn(dirName string) []string {
-	seen := map[string]bool{}
-	var out []string
+func (l *Loader) aliasTarget(name string) string {
 	for _, p := range l.paths() {
-		ents, err := os.ReadDir(filepath.Join(p, dirName))
+		path := filepath.Join(p, name)
+		fi, err := os.Lstat(path)
 		if err != nil {
 			continue
 		}
-		for _, e := range ents {
-			if e.IsDir() {
+		if fi.Mode()&os.ModeSymlink == 0 {
+			return name
+		}
+		if base, ok := readlinkBasename(path); ok && base != name {
+			return base
+		}
+		return name
+	}
+	return name
+}
+
+func (l *Loader) linksIn(dirNames ...string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range l.paths() {
+		for _, dirName := range dirNames {
+			ents, err := os.ReadDir(filepath.Join(p, dirName))
+			if err != nil {
 				continue
 			}
-			if n := e.Name(); !seen[n] {
-				seen[n] = true
-				out = append(out, n)
+			for _, e := range ents {
+				if e.IsDir() {
+					continue
+				}
+				if n := e.Name(); !seen[n] {
+					seen[n] = true
+					out = append(out, n)
+				}
 			}
 		}
 	}
