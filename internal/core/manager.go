@@ -208,6 +208,21 @@ func (m *Manager) Get(name string) (*Unit, bool) {
 	return u, ok
 }
 
+// TimerUnits returns the loaded .timer units that have a real file (enabled via a
+// .wants link and present). The timer scheduler arms these; the manager never runs
+// a .timer itself (it has no Svc).
+func (m *Manager) TimerUnits() []*unit.File {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []*unit.File
+	for _, u := range m.units {
+		if u.Kind == unit.TypeTimer && u.File != nil && u.File.Path != "" {
+			out = append(out, u.File)
+		}
+	}
+	return out
+}
+
 // Plan exposes the computed start transaction for inspection/tests.
 func (m *Manager) Plan(target string) *depgraph.Plan {
 	m.mu.RLock()

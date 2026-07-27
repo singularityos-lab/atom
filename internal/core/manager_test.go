@@ -20,6 +20,28 @@ func write(t *testing.T, path, content string) {
 	}
 }
 
+func TestTimerUnitEnabledIsLoadedNotStarted(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "t.target"), "[Unit]\n")
+	write(t, filepath.Join(dir, "updated-check.timer"), "[Timer]\nOnBootSec=3min\nOnUnitActiveSec=6h\n")
+	// Enable the timer via .wants, exactly as the image does with a symlink.
+	write(t, filepath.Join(dir, "t.target.wants", "updated-check.timer"), "")
+
+	loader := &unit.Loader{Paths: []string{dir}}
+	m, err := Build(loader, "t.target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	timers := m.TimerUnits()
+	if len(timers) != 1 || timers[0].Name != "updated-check.timer" {
+		t.Fatalf("TimerUnits() = %v, want one updated-check.timer", timers)
+	}
+	// A .timer has no Svc, so bringing up the target must not fail on it.
+	if err := m.StartTarget(context.Background(), "t.target"); err != nil {
+		t.Fatalf("StartTarget with an enabled timer: %v", err)
+	}
+}
+
 // TestOrderedBootViaOneshot uses oneshot services (whose Start blocks until the
 // command completes) so the recorded execution order is a deterministic witness
 // that the scheduler honored After=.

@@ -18,6 +18,7 @@ import (
 	"github.com/singularityos-lab/atom/internal/logd"
 	"github.com/singularityos-lab/atom/internal/reaper"
 	"github.com/singularityos-lab/atom/internal/service"
+	"github.com/singularityos-lab/atom/internal/timer"
 	"github.com/singularityos-lab/atom/internal/unit"
 )
 
@@ -309,6 +310,13 @@ func boot(cfg bootConfig) int {
 		shutdown(m, cfg.target)
 		return powerOff()
 	}
+
+	// Arm enabled .timer units (the periodic OTA update check, etc.) for the life of
+	// the session. A timer firing activates its unit via the manager; a scheduling or
+	// activation error is logged, never fatal.
+	go timer.NewScheduler(m.TimerUnits(),
+		func(n string) error { return m.StartUnit(context.Background(), n) },
+		logf, start).Run(context.Background())
 
 	waitForShutdown(m, cfg.target)
 	return 0
