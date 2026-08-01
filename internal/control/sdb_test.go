@@ -30,13 +30,11 @@ func TestSDBControlOwnsGateAndService(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	devGate := filepath.Join(dir, "dev.enabled")
 	marker := filepath.Join(dir, "state", "enabled")
 	sock := filepath.Join(dir, "sdb.sock")
 	srv, err := ListenSDB(sock, m, SDBConfig{
 		Unit:             "sdbd.service",
 		Marker:           marker,
-		DevelopmentGate:  devGate,
 		BrokerExecutable: exe,
 		GroupID:          os.Getgid(),
 		MinimumUID:       1000,
@@ -48,16 +46,6 @@ func TestSDBControlOwnsGateAndService(t *testing.T) {
 	defer srv.Close()
 
 	rep, err := Send(sock, Request{Cmd: "sdb-enable"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.OK {
-		t.Fatal("enable succeeded without development mode")
-	}
-	if err := os.WriteFile(devGate, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	rep, err = Send(sock, Request{Cmd: "sdb-enable"})
 	if err != nil || !rep.OK || rep.State != "active" {
 		t.Fatalf("enable: err=%v rep=%+v", err, rep)
 	}

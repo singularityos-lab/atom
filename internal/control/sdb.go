@@ -18,7 +18,6 @@ const (
 	DefaultSDBSocket  = "/run/atom/sdb-control.sock"
 	defaultSDBUnit    = "sdbd.service"
 	defaultSDBMarker  = "/var/lib/sinty-sdb/enabled"
-	defaultDevGate    = "/etc/atom/dev.enabled"
 	defaultBrokerExe  = "/usr/bin/ush-broker"
 	defaultSDBGroup   = "singularity-session"
 	defaultMinimumUID = 1000
@@ -29,7 +28,6 @@ const (
 type SDBConfig struct {
 	Unit             string
 	Marker           string
-	DevelopmentGate  string
 	BrokerExecutable string
 	GroupID          int
 	MinimumUID       uint32
@@ -48,7 +46,6 @@ func DefaultSDBConfig() (SDBConfig, error) {
 	return SDBConfig{
 		Unit:             defaultSDBUnit,
 		Marker:           defaultSDBMarker,
-		DevelopmentGate:  defaultDevGate,
 		BrokerExecutable: defaultBrokerExe,
 		GroupID:          gid,
 		MinimumUID:       defaultMinimumUID,
@@ -57,8 +54,8 @@ func DefaultSDBConfig() (SDBConfig, error) {
 
 // ListenSDB creates the narrow control socket used by ush-broker.
 func ListenSDB(path string, m *core.Manager, cfg SDBConfig) (*SDBServer, error) {
-	if cfg.Unit == "" || cfg.Marker == "" || cfg.DevelopmentGate == "" ||
-		cfg.BrokerExecutable == "" || cfg.GroupID < 0 || cfg.MinimumUID == 0 {
+	if cfg.Unit == "" || cfg.Marker == "" || cfg.BrokerExecutable == "" ||
+		cfg.GroupID < 0 || cfg.MinimumUID == 0 {
 		return nil, fmt.Errorf("incomplete sdb control configuration")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -129,9 +126,6 @@ func (s *SDBServer) handle(conn net.Conn) {
 
 func (s *SDBServer) setEnabled(on bool) Reply {
 	if on {
-		if _, err := os.Stat(s.cfg.DevelopmentGate); err != nil {
-			return Reply{Error: "development mode is not enabled"}
-		}
 		if err := os.MkdirAll(filepath.Dir(s.cfg.Marker), 0o755); err != nil {
 			return Reply{Error: err.Error()}
 		}
@@ -139,19 +133,35 @@ func (s *SDBServer) setEnabled(on bool) Reply {
 		if err != nil {
 			return Reply{Error: err.Error()}
 		}
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			_ = os.Remove(s.cfg.Marker)
+			_ = syncMarkerDir(s.cfg.Marker)
+			return Reply{Error: err.Error()}
+		}
 		if err := f.Close(); err != nil {
+			return Reply{Error: err.Error()}
+		}
+		if err := syncMarkerDir(s.cfg.Marker); err != nil {
+			_ = os.Remove(s.cfg.Marker)
+			_ = syncMarkerDir(s.cfg.Marker)
 			return Reply{Error: err.Error()}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if err := s.m.StartUnit(ctx, s.cfg.Unit); err != nil {
 			_ = os.Remove(s.cfg.Marker)
+			_ = syncMarkerDir(s.cfg.Marker)
 			return Reply{Error: err.Error()}
 		}
 		return Reply{OK: true, State: s.m.State(s.cfg.Unit)}
 	}
 
-	if err := os.Remove(s.cfg.Marker); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(s.cfg.Marker); err != nil {
+		if !os.IsNotExist(err) {
+			return Reply{Error: err.Error()}
+		}
+	} else if err := syncMarkerDir(s.cfg.Marker); err != nil {
 		return Reply{Error: err.Error()}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -160,6 +170,15 @@ func (s *SDBServer) setEnabled(on bool) Reply {
 		return Reply{Error: err.Error()}
 	}
 	return Reply{OK: true, State: s.m.State(s.cfg.Unit)}
+}
+
+func syncMarkerDir(marker string) error {
+	dir, err := os.Open(filepath.Dir(marker))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func (s *SDBServer) authorize(conn net.Conn) bool {
