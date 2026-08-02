@@ -94,3 +94,65 @@ func TestSDBControlChecksPeerIdentity(t *testing.T) {
 		t.Fatal("different inode accepted")
 	}
 }
+
+func TestSDBControlDelegatesOnlySessionPowerActions(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("the production socket owner check requires root")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	units := filepath.Join(dir, "units")
+	if err := os.Mkdir(units, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeUnit(t, units, "base.target", "[Unit]\n")
+	m, err := core.Build(&unit.Loader{Paths: []string{units}}, "base.target")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := ListenSDB(filepath.Join(dir, "sdb.sock"), m, SDBConfig{
+		Unit:             "sdbd.service",
+		Marker:           filepath.Join(dir, "state", "enabled"),
+		BrokerExecutable: exe,
+		GroupID:          os.Getgid(),
+		MinimumUID:       1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signals := make(chan syscall.Signal, 2)
+	srv.shutdown = func(sig syscall.Signal) Reply {
+		signals <- sig
+		return Reply{OK: true}
+	}
+	go srv.Serve()
+	defer srv.Close()
+
+	for _, tc := range []struct {
+		cmd  string
+		want syscall.Signal
+	}{
+		{cmd: "session-reboot", want: syscall.SIGINT},
+		{cmd: "session-poweroff", want: syscall.SIGTERM},
+	} {
+		rep, err := Send(filepath.Join(dir, "sdb.sock"), Request{Cmd: tc.cmd})
+		if err != nil || !rep.OK {
+			t.Fatalf("%s: err=%v rep=%+v", tc.cmd, err, rep)
+		}
+		if got := <-signals; got != tc.want {
+			t.Fatalf("%s signal=%v, want %v", tc.cmd, got, tc.want)
+		}
+	}
+
+	rep, err := Send(filepath.Join(dir, "sdb.sock"), Request{Cmd: "restart", Unit: "other.service"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.OK || rep.Error == "" {
+		t.Fatalf("arbitrary init command accepted: %+v", rep)
+	}
+}

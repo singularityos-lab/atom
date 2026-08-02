@@ -111,9 +111,9 @@ func (s *Server) mutate(req Request) Reply {
 		// Accepted for wire compatibility; unit reload and boot confirmation
 		// are not handled by the init.
 	case "reboot":
-		return s.shutdownAction(syscall.SIGINT) // waitForShutdown maps SIGINT -> reboot
+		return shutdownAction(syscall.SIGINT) // waitForShutdown maps SIGINT -> reboot
 	case "poweroff", "halt":
-		return s.shutdownAction(syscall.SIGTERM)
+		return shutdownAction(syscall.SIGTERM)
 	}
 	return Reply{OK: true, State: s.m.State(req.Unit)}
 }
@@ -122,7 +122,7 @@ func (s *Server) mutate(req Request) Reply {
 // It signals the init (self) so the single tested shutdown path in waitForShutdown
 // runs; it refuses when not running as the init, so a dev/test invocation cannot
 // signal the host's real PID 1.
-func (s *Server) shutdownAction(sig syscall.Signal) Reply {
+func shutdownAction(sig syscall.Signal) Reply {
 	if os.Getpid() != 1 {
 		return Reply{Error: "reboot/poweroff is only available to the init (pid 1)"}
 	}

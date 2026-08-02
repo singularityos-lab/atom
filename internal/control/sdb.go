@@ -76,14 +76,15 @@ func ListenSDB(path string, m *core.Manager, cfg SDBConfig) (*SDBServer, error) 
 		_ = os.Remove(path)
 		return nil, fmt.Errorf("set sdb control mode: %w", err)
 	}
-	return &SDBServer{ln: ln, m: m, cfg: cfg}, nil
+	return &SDBServer{ln: ln, m: m, cfg: cfg, shutdown: shutdownAction}, nil
 }
 
-// SDBServer serves only status, enable and disable for sdbd.service.
+// SDBServer serves the fixed desktop operations delegated to ush-broker.
 type SDBServer struct {
-	ln  net.Listener
-	m   *core.Manager
-	cfg SDBConfig
+	ln       net.Listener
+	m        *core.Manager
+	cfg      SDBConfig
+	shutdown func(syscall.Signal) Reply
 }
 
 func (s *SDBServer) Serve() {
@@ -119,6 +120,10 @@ func (s *SDBServer) handle(conn net.Conn) {
 		_ = writeFrame(conn, s.setEnabled(true))
 	case "sdb-disable":
 		_ = writeFrame(conn, s.setEnabled(false))
+	case "session-reboot":
+		_ = writeFrame(conn, s.shutdown(syscall.SIGINT))
+	case "session-poweroff":
+		_ = writeFrame(conn, s.shutdown(syscall.SIGTERM))
 	default:
 		_ = writeFrame(conn, Reply{Error: "unknown command: " + req.Cmd})
 	}
