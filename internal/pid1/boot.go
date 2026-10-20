@@ -214,7 +214,7 @@ func boot(cfg bootConfig) int {
 	logQuiet = cmdlineHas("quiet")
 
 	// Disable Ctrl-Alt-Del triggering an immediate kernel reboot; PID 1 owns it.
-	_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_CAD_OFF)
+	disableCtrlAltDel()
 
 	// Give spawned services systemd's default exec PATH. atom inherits no PATH as
 	// init, so bare-name ExecStart (udevadm, systemd-tmpfiles, agetty) would fail

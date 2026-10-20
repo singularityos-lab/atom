@@ -195,17 +195,17 @@ func (s *SDBServer) authorize(conn net.Conn) bool {
 	if err != nil {
 		return false
 	}
-	var cred *syscall.Ucred
+	var cred *peerCred
 	var inner error
 	if err := raw.Control(func(fd uintptr) {
-		cred, inner = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
+		cred, inner = getPeerCred(int(fd))
 	}); err != nil || inner != nil || cred == nil {
 		return false
 	}
 	return s.authorizePeer(cred)
 }
 
-func (s *SDBServer) authorizePeer(cred *syscall.Ucred) bool {
+func (s *SDBServer) authorizePeer(cred *peerCred) bool {
 	if cred.Uid == 0 {
 		return true
 	}

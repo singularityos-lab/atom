@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
-	"syscall"
 )
 
 // seedMachineID ensures /etc/machine-id holds a valid id, a PID-1 duty. Programs
@@ -38,7 +37,7 @@ func seedMachineID(log func(string, ...any)) {
 		// the mount target must exist; create it if absent
 		_ = os.WriteFile(path, nil, 0o444)
 	}
-	if err := syscall.Mount(runPath, path, "", syscall.MS_BIND, ""); err != nil {
+	if err := bindMount(runPath, path); err != nil {
 		log("machine-id: bind-mount: %v", err)
 		return
 	}

@@ -146,7 +146,7 @@ func (s *Server) authorize(conn net.Conn) bool {
 	var uid uint32
 	var inner error
 	if err := raw.Control(func(fd uintptr) {
-		cred, e := syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
+		cred, e := getPeerCred(int(fd))
 		if e != nil {
 			inner = e
 			return
