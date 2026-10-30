@@ -118,15 +118,18 @@ func (s *Server) mutate(req Request) Reply {
 	return Reply{OK: true, State: s.m.State(req.Unit)}
 }
 
+// ForcedInit marks an init started with --force under another first process.
+var ForcedInit bool
+
 // shutdownAction asks PID 1 to run its ordered shutdown then reboot(2)/power off.
 // It signals the init (self) so the single tested shutdown path in waitForShutdown
 // runs; it refuses when not running as the init, so a dev/test invocation cannot
 // signal the host's real PID 1.
 func shutdownAction(sig syscall.Signal) Reply {
-	if os.Getpid() != 1 {
+	if os.Getpid() != 1 && !ForcedInit {
 		return Reply{Error: "reboot/poweroff is only available to the init (pid 1)"}
 	}
-	if err := syscall.Kill(1, sig); err != nil {
+	if err := syscall.Kill(os.Getpid(), sig); err != nil {
 		return Reply{Error: err.Error()}
 	}
 	return Reply{OK: true}

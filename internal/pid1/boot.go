@@ -47,6 +47,8 @@ func Main(args []string) int {
 		return 1
 	}
 
+	control.ForcedInit = *force
+
 	return boot(bootConfig{
 		target:     *target, // resolved in boot() after /proc is mounted
 		exitAfter:  *exitAfter,
