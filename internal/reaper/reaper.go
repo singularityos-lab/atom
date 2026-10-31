@@ -28,23 +28,17 @@ func NewRegistry() *Registry {
 	}
 }
 
-// staleWait bounds how old a buffered status may be to satisfy a Wait. A caller
-// registers interest immediately after spawning, so a status legitimately
-// buffered in the register-vs-exit race is only microseconds old; anything older
-// belongs to an earlier child whose pid has since been reused, and
-// must not be handed to the new child's waiter.
-const staleWait = time.Second
-
 // Wait registers interest in pid and returns a one-shot channel for its exit
 // status. If the child already exited (its status was delivered before this
-// call -- the tiny register-vs-exit window), the freshly buffered status is
-// returned immediately. A buffered status older than staleWait is a leftover
-// from a prior child with the same (reused) pid: it is dropped and a fresh
-// waiter installed so the new child's real exit routes here.
+// call), the buffered status is returned immediately, however late the caller
+// is: a loaded machine can delay it by seconds. A buffered status for a pid that
+// is still alive is a leftover from a prior child with the same (reused) pid: it
+// is dropped and a fresh waiter installed so the new child's real exit routes
+// here. A zombie counts as alive, and its status arrives through Deliver.
 func (r *Registry) Wait(pid int) <-chan syscall.WaitStatus {
 	ch := make(chan syscall.WaitStatus, 1)
 	r.mu.Lock()
-	if p, ok := r.pending[pid]; ok && time.Since(p.at) < staleWait {
+	if p, ok := r.pending[pid]; ok && syscall.Kill(pid, 0) == syscall.ESRCH {
 		ch <- p.ws
 		delete(r.pending, pid)
 	} else {

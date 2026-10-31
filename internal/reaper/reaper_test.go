@@ -21,8 +21,9 @@ func TestRegistryWaitThenDeliver(t *testing.T) {
 func TestRegistryBuffersEarlyDelivery(t *testing.T) {
 	r := NewRegistry()
 	// Status arrives BEFORE the waiter registers (the register-vs-exit race).
-	r.Deliver(5678, syscall.WaitStatus(0))
-	ch := r.Wait(5678)
+	pid := deadPID(t)
+	r.Deliver(pid, syscall.WaitStatus(0))
+	ch := r.Wait(pid)
 	select {
 	case <-ch:
 	case <-time.After(time.Second):
