@@ -623,6 +623,9 @@ func exitInfoFromStatus(ws syscall.WaitStatus) ExitInfo {
 	return ExitInfo{Code: ws.ExitStatus()}
 }
 
+// statusPoll is how often a waiter checks that its child still exists.
+const statusPoll = time.Second
+
 // ReaperWait, when set (by PID 1), is the sole source of child exit statuses:
 // it registers interest in a pid and returns a channel for its WaitStatus. With
 // it set, services do NOT call exec.Cmd.Wait, so the global SIGCHLD reaper does
@@ -636,13 +639,14 @@ func (s *Service) registerWait(cmd *exec.Cmd) <-chan ExitInfo {
 	out := make(chan ExitInfo, 1)
 	if ReaperWait != nil {
 		ws := ReaperWait(cmd.Process.Pid) // registers synchronously here
+		pid := cmd.Process.Pid
 		go func() {
-			status := <-ws
+			info := s.awaitStatus(pid, ws)
 			// The global reaper already wait4()'d this pid, so os/exec's Wait() is
 			// never called -- release the Process ourselves to close the pidfd os/exec
 			// opened for it, otherwise every spawn leaks one fd.
 			_ = cmd.Process.Release()
-			out <- exitInfoFromStatus(status)
+			out <- info
 		}()
 	} else {
 		go func() {
@@ -651,6 +655,31 @@ func (s *Service) registerWait(cmd *exec.Cmd) <-chan ExitInfo {
 		}()
 	}
 	return out
+}
+
+// awaitStatus waits for the reaper's status for pid. A child that is gone with no
+// status must not wedge the boot, so that case ends the wait as a clean exit and is
+// logged.
+func (s *Service) awaitStatus(pid int, ws <-chan syscall.WaitStatus) ExitInfo {
+	tick := time.NewTicker(statusPoll)
+	defer tick.Stop()
+	gone := false
+	for {
+		select {
+		case status := <-ws:
+			return exitInfoFromStatus(status)
+		case <-tick.C:
+			if syscall.Kill(pid, 0) != syscall.ESRCH {
+				gone = false
+				continue
+			}
+			if gone {
+				fmt.Fprintf(os.Stderr, "sinit: %s: pid %d exited with no status\n", s.cfg.Name, pid)
+				return ExitInfo{}
+			}
+			gone = true
+		}
+	}
 }
 
 // Stop deactivates the service: ExecStop, then SIGTERM, then SIGKILL on timeout.

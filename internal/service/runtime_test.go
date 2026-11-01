@@ -4,7 +4,9 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -255,5 +257,32 @@ RemainAfterExit=no
 	}
 	if len(c.ConditionPathExists) != 1 || c.ConditionPathExists[0] != "/run/atom/installed" {
 		t.Errorf("ConditionPathExists = %v", c.ConditionPathExists)
+	}
+}
+
+// TestRegisterWaitSurvivesLostStatus covers a child that is gone with no status from
+// the reaper: the wait must end instead of wedging the boot.
+func TestRegisterWaitSurvivesLostStatus(t *testing.T) {
+	old := ReaperWait
+	defer func() { ReaperWait = old }()
+	ReaperWait = func(pid int) <-chan syscall.WaitStatus {
+		go func() {
+			var ws syscall.WaitStatus
+			_, _ = syscall.Wait4(pid, &ws, 0, nil)
+		}()
+		return make(chan syscall.WaitStatus)
+	}
+	s := New(Config{Name: "lost.service"})
+	cmd := exec.Command("true")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case info := <-s.registerWait(cmd):
+		if !info.Clean() {
+			t.Fatalf("got %+v, want a clean exit", info)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("wait never ended for a child with no status")
 	}
 }
