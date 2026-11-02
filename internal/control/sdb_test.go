@@ -71,13 +71,13 @@ func TestSDBControlChecksPeerIdentity(t *testing.T) {
 		BrokerExecutable: exe,
 		MinimumUID:       1000,
 	}}
-	if !srv.authorizePeer(&syscall.Ucred{Uid: 0, Pid: int32(os.Getpid())}) {
+	if !srv.authorizePeer(&peerCred{Uid: 0, Pid: int32(os.Getpid())}) {
 		t.Fatal("root peer refused")
 	}
-	if srv.authorizePeer(&syscall.Ucred{Uid: 102, Pid: int32(os.Getpid())}) {
+	if srv.authorizePeer(&peerCred{Uid: 102, Pid: int32(os.Getpid())}) {
 		t.Fatal("system user accepted")
 	}
-	if !srv.authorizePeer(&syscall.Ucred{Uid: 1000, Pid: int32(os.Getpid())}) {
+	if !srv.authorizePeer(&peerCred{Uid: 1000, Pid: int32(os.Getpid())}) {
 		t.Fatal("trusted executable refused")
 	}
 
@@ -90,7 +90,7 @@ func TestSDBControlChecksPeerIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv.cfg.BrokerExecutable = copyPath
-	if srv.authorizePeer(&syscall.Ucred{Uid: 1000, Pid: int32(os.Getpid())}) {
+	if srv.authorizePeer(&peerCred{Uid: 1000, Pid: int32(os.Getpid())}) {
 		t.Fatal("different inode accepted")
 	}
 }

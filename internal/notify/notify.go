@@ -108,7 +108,7 @@ func NewListener(path string) (*Listener, error) {
 	}
 	if raw, err := conn.SyscallConn(); err == nil {
 		_ = raw.Control(func(fd uintptr) {
-			_ = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_PASSCRED, 1)
+			enableCredentials(int(fd))
 		})
 	}
 	return &Listener{conn: conn, path: path}, nil
@@ -130,9 +130,9 @@ func (l *Listener) Receive() (Received, error) {
 					continue
 				}
 				switch scms[i].Header.Type {
-				case syscall.SCM_CREDENTIALS:
-					if cred, e2 := syscall.ParseUnixCredentials(&scms[i]); e2 == nil {
-						r.PID, r.UID, r.GID, r.HasCred = int(cred.Pid), cred.Uid, cred.Gid, true
+				case scmCredentials:
+					if pid, uid, gid, ok := parseCredentials(&scms[i]); ok {
+						r.PID, r.UID, r.GID, r.HasCred = pid, uid, gid, true
 					}
 				case syscall.SCM_RIGHTS:
 					// sd_notify_barrier (and FDSTORE) pass file descriptors via
