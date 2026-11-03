@@ -232,24 +232,50 @@ func (m *Manager) Plan(target string) *depgraph.Plan {
 	return m.graph.PlanStart(target)
 }
 
-// StartTarget activates target by running each dependency layer to readiness
-// before starting the next; units within a layer start concurrently. A unit
-// that fails to start is reported via OnUnitError but does not abort the
-// transaction, so the rest of the boot proceeds.
+// StartTarget activates target. Each unit starts as soon as the units it is
+// ordered after have reached readiness, so a slow unit only delays the units
+// that depend on it. A unit that fails to start is reported via OnUnitError
+// but does not abort the transaction, so the rest of the boot proceeds.
 func (m *Manager) StartTarget(ctx context.Context, target string) error {
 	m.openSockets()
 	m.mu.RLock()
 	plan := m.graph.PlanStart(target)
 	m.mu.RUnlock()
+	done := map[string]chan struct{}{}
 	for _, layer := range plan.Layers {
-		m.startLayer(ctx, layer)
+		for _, name := range layer {
+			done[name] = make(chan struct{})
+		}
 	}
+	var wg sync.WaitGroup
+	for _, layer := range plan.Layers {
+		for _, name := range layer {
+			wg.Add(1)
+			go func(n string) {
+				defer wg.Done()
+				defer close(done[n])
+				for _, pred := range plan.WaitsOn[n] {
+					ch, ok := done[pred]
+					if !ok {
+						continue
+					}
+					select {
+					case <-ch:
+					case <-ctx.Done():
+						return
+					}
+				}
+				m.runUnit(ctx, n)
+			}(name)
+		}
+	}
+	wg.Wait()
 	return nil
 }
 
 // openSockets binds all .socket listeners up front, before any service starts,
 // so a socket-activated service (e.g. dbus.service --systemd-activation) is
-// handed its already-listening fd. Done before the layers to avoid racing a
+// handed its already-listening fd. Done before any unit starts to avoid racing a
 // socket's open against its service's start.
 func (m *Manager) openSockets() {
 	type openError struct {
@@ -288,34 +314,26 @@ func (m *Manager) openSockets() {
 	}
 }
 
-func (m *Manager) startLayer(ctx context.Context, layer []string) {
-	var wg sync.WaitGroup
-	for _, name := range layer {
-		wg.Add(1)
-		go func(n string) {
-			defer wg.Done()
-			// A panic while starting one unit must never kill PID 1: recover and
-			// demote it to a failed unit, so the rest of the boot still proceeds.
-			defer func() {
-				if r := recover(); r != nil {
-					if m.OnUnitError != nil {
-						m.OnUnitError(n, fmt.Errorf("panic starting unit: %v", r))
-					}
-				}
-			}()
-			if m.OnUnitStart != nil {
-				m.OnUnitStart(n)
+func (m *Manager) runUnit(ctx context.Context, n string) {
+	// A panic while starting one unit must never kill PID 1: recover and
+	// demote it to a failed unit, so the rest of the boot still proceeds.
+	defer func() {
+		if r := recover(); r != nil {
+			if m.OnUnitError != nil {
+				m.OnUnitError(n, fmt.Errorf("panic starting unit: %v", r))
 			}
-			if err := m.startUnit(ctx, n); err != nil {
-				if m.OnUnitError != nil {
-					m.OnUnitError(n, err)
-				}
-			} else if m.OnUnitActive != nil {
-				m.OnUnitActive(n)
-			}
-		}(name)
+		}
+	}()
+	if m.OnUnitStart != nil {
+		m.OnUnitStart(n)
 	}
-	wg.Wait()
+	if err := m.startUnit(ctx, n); err != nil {
+		if m.OnUnitError != nil {
+			m.OnUnitError(n, err)
+		}
+	} else if m.OnUnitActive != nil {
+		m.OnUnitActive(n)
+	}
 }
 
 func (m *Manager) startUnit(ctx context.Context, name string) error {

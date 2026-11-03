@@ -17,6 +17,9 @@ type Plan struct {
 	BrokenEdges []string
 	// Conflicts lists conflict pairs discovered in the closure.
 	Conflicts [][2]string
+	// WaitsOn maps each unit to the units that must reach readiness before it
+	// may start, after cycle-breaking.
+	WaitsOn map[string][]string
 }
 
 // PlanStart computes the start transaction needed to activate goal: the
@@ -99,6 +102,10 @@ func (g *Graph) PlanStart(goal string) *Plan {
 
 	p.BrokenEdges = breakCycles(waitsOn)
 	p.Layers = layerize(waitsOn)
+	p.WaitsOn = map[string][]string{}
+	for name, preds := range waitsOn {
+		p.WaitsOn[name] = sortedKeysOf(preds)
+	}
 
 	for name := range closure {
 		p.Units = append(p.Units, name)

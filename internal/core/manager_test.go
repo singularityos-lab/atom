@@ -294,3 +294,42 @@ func TestBrokenUnitDoesNotAbortBuild(t *testing.T) {
 		t.Fatalf("StartTarget must not fail on the inert broken unit: %v", err)
 	}
 }
+
+// TestSlowUnitDelaysOnlyItsDependents checks that a unit waits for the units
+// it is ordered after, not for every unit that shares their layer.
+func TestSlowUnitDelaysOnlyItsDependents(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	dir := t.TempDir()
+	log := filepath.Join(dir, "order.log")
+	mkSvc := func(name, after, pre string) string {
+		s := "[Unit]\n"
+		if after != "" {
+			s += "After=" + after + "\n"
+		}
+		return s + "[Service]\nType=oneshot\nExecStart=/bin/sh -c '" + pre + "echo " + name + " >> " + log + "'\n"
+	}
+	write(t, filepath.Join(dir, "slow.service"), mkSvc("slow", "", "sleep 1; "))
+	write(t, filepath.Join(dir, "fast.service"), mkSvc("fast", "", ""))
+	write(t, filepath.Join(dir, "next.service"), mkSvc("next", "fast.service", ""))
+	write(t, filepath.Join(dir, "last.service"), mkSvc("last", "slow.service next.service", ""))
+	write(t, filepath.Join(dir, "boot.target"),
+		"[Unit]\nWants=slow.service fast.service next.service last.service\n")
+
+	m, err := Build(&unit.Loader{Paths: []string{dir}}, "boot.target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.StartTarget(context.Background(), "boot.target"); err != nil {
+		t.Fatalf("StartTarget: %v", err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("read order log: %v", err)
+	}
+	got := strings.Join(strings.Fields(string(data)), ",")
+	if got != "fast,next,slow,last" {
+		t.Errorf("execution order = %s, want fast,next,slow,last", got)
+	}
+}
