@@ -35,6 +35,11 @@ type Socket struct {
 	FDName  string      // FileDescriptorName=, defaults to the socket name
 	Mode    os.FileMode // SocketMode=, applied to pathname sockets (default 0666)
 	Addrs   []Addr
+	// Accept= yes: one instance of the "prefix@.service" template per
+	// connection, the connection as its stdin and stdout.
+	Accept bool
+	// MaxConnections= caps the instances running at once (systemd default 64).
+	MaxConnections int
 }
 
 // FromFile projects a parsed .socket unit.
@@ -57,6 +62,19 @@ func FromFile(f *unit.File) (*Socket, error) {
 	if v, ok := f.Get("Socket", "SocketMode"); ok {
 		if m, err := strconv.ParseUint(strings.TrimSpace(v), 8, 32); err == nil {
 			s.Mode = os.FileMode(m)
+		}
+	}
+
+	if v, ok := f.Get("Socket", "Accept"); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "yes", "true", "on", "1":
+			s.Accept = true
+		}
+	}
+	s.MaxConnections = 64
+	if v, ok := f.Get("Socket", "MaxConnections"); ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			s.MaxConnections = n
 		}
 	}
 
@@ -109,7 +127,10 @@ func parseAddr(v string, kind Kind) (Addr, error) {
 
 // Listener is an open listening fd plus the means to close it.
 type Listener struct {
-	File   *os.File
+	File *os.File
+	// Net is the stream listener itself, kept so an Accept=yes socket can
+	// take connections. Nil for datagram sockets.
+	Net    net.Listener
 	closer func() error
 }
 
@@ -195,6 +216,6 @@ func openAddr(a Addr) (*Listener, error) {
 			ln.Close()
 			return nil, err
 		}
-		return &Listener{File: f, closer: func() error { f.Close(); return ln.Close() }}, nil
+		return &Listener{File: f, Net: ln, closer: func() error { f.Close(); return ln.Close() }}, nil
 	}
 }

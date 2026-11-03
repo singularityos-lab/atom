@@ -147,7 +147,9 @@ func Build(loader *unit.Loader, names ...string) (*Manager, error) {
 		if f.Type == unit.TypeSocket && f.Path != "" {
 			if sock, err := socketact.FromFile(f); err == nil {
 				u.Sock = sock
-				m.svcToSocket[sock.Service] = n
+				if !sock.Accept {
+					m.svcToSocket[sock.Service] = n
+				}
 			}
 		}
 		m.units[n] = u
@@ -255,6 +257,7 @@ func (m *Manager) openSockets() {
 		err  error
 	}
 	var failures []openError
+	var accepts []*Unit
 
 	m.mu.Lock()
 	for name, u := range m.units {
@@ -268,9 +271,15 @@ func (m *Manager) openSockets() {
 			continue
 		}
 		u.Listeners = ls
+		if u.Sock.Accept {
+			accepts = append(accepts, u)
+		}
 	}
 	hook := m.OnUnitError
 	m.mu.Unlock()
+	for _, u := range accepts {
+		m.acceptLoop(u.Name, u.Sock, u.Listeners)
+	}
 
 	if hook != nil {
 		for _, failure := range failures {

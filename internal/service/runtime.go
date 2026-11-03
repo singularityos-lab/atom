@@ -72,6 +72,9 @@ type Service struct {
 
 	Stdout io.Writer
 	Stderr io.Writer
+	// Stdin, when set, is handed to the main process as fd 0 (an Accept=yes
+	// connection under StandardInput=socket).
+	Stdin *os.File
 
 	// DryRun simulates start/stop without executing any process.
 	DryRun bool
@@ -759,6 +762,9 @@ var sharedNull, _ = os.OpenFile(os.DevNull, os.O_RDWR, 0)
 // instead: a shared /dev/null for stdin and nil output, and our own pipe (closed
 // when the child's write end goes away) for a log writer.
 func (s *Service) startCmd(cmd *exec.Cmd) error {
+	if cmd.Stdin == nil && s.Stdin != nil {
+		cmd.Stdin = s.Stdin
+	}
 	if cmd.Stdin == nil && sharedNull != nil {
 		cmd.Stdin = sharedNull
 	}
