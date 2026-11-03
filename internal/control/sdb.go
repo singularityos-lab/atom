@@ -21,6 +21,9 @@ const (
 	defaultBrokerExe  = "/usr/bin/ush-broker"
 	defaultSDBGroup   = "singularity-session"
 	defaultMinimumUID = 1000
+	defaultSixUnit    = "six-bridge.service"
+	defaultSixMarker  = "/var/lib/six-bridge/enabled"
+	defaultSixState   = "/boot/efi/EFI/atom/boot-state"
 )
 
 // SDBConfig defines the single gated service exposed to the desktop broker.
@@ -31,6 +34,9 @@ type SDBConfig struct {
 	BrokerExecutable string
 	GroupID          int
 	MinimumUID       uint32
+	SixUnit          string
+	SixMarker        string
+	SixBootState     string
 }
 
 // DefaultSDBConfig resolves the session group used by the installed image.
@@ -49,6 +55,9 @@ func DefaultSDBConfig() (SDBConfig, error) {
 		BrokerExecutable: defaultBrokerExe,
 		GroupID:          gid,
 		MinimumUID:       defaultMinimumUID,
+		SixUnit:          defaultSixUnit,
+		SixMarker:        defaultSixMarker,
+		SixBootState:     defaultSixState,
 	}, nil
 }
 
@@ -120,6 +129,12 @@ func (s *SDBServer) handle(conn net.Conn) {
 		_ = writeFrame(conn, s.setEnabled(true))
 	case "sdb-disable":
 		_ = writeFrame(conn, s.setEnabled(false))
+	case "six-status":
+		_ = writeFrame(conn, s.sixStatus())
+	case "six-enable":
+		_ = writeFrame(conn, s.setSixEnabled(true))
+	case "six-disable":
+		_ = writeFrame(conn, s.setSixEnabled(false))
 	case "session-reboot":
 		_ = writeFrame(conn, s.shutdown(syscall.SIGINT))
 	case "session-poweroff":
