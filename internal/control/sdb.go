@@ -24,6 +24,7 @@ const (
 	defaultSixUnit    = "six-bridge.service"
 	defaultSixMarker  = "/var/lib/six-bridge/enabled"
 	defaultSixState   = "/boot/efi/EFI/atom/boot-state"
+	defaultSixFetch   = "/boot/rootfs/six-active.erofs.tmp"
 )
 
 // SDBConfig defines the single gated service exposed to the desktop broker.
@@ -37,6 +38,7 @@ type SDBConfig struct {
 	SixUnit          string
 	SixMarker        string
 	SixBootState     string
+	SixDownload      string
 }
 
 // DefaultSDBConfig resolves the session group used by the installed image.
@@ -58,6 +60,7 @@ func DefaultSDBConfig() (SDBConfig, error) {
 		SixUnit:          defaultSixUnit,
 		SixMarker:        defaultSixMarker,
 		SixBootState:     defaultSixState,
+		SixDownload:      defaultSixFetch,
 	}, nil
 }
 
