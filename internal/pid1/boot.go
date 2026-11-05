@@ -306,6 +306,8 @@ func boot(cfg bootConfig) int {
 		logf("ERROR starting %s: %v", cfg.target, err)
 	}
 	logf("reached %s in %s", cfg.target, time.Since(start).Round(time.Millisecond))
+	startWatchdog()
+	startKernelLog()
 
 	if cfg.exitAfter {
 		logf("exit-after-target set: shutting down")
