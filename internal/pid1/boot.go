@@ -218,6 +218,12 @@ func boot(cfg bootConfig) int {
 	// Disable Ctrl-Alt-Del triggering an immediate kernel reboot; PID 1 owns it.
 	disableCtrlAltDel()
 
+	// Catch shutdown signals from the start: without a handler the Go runtime
+	// exits on SIGTERM, and PID 1 exiting panics the kernel. A poweroff that
+	// arrives while the boot target is still starting must power off instead.
+	shutdownSignals := make(chan os.Signal, 4)
+	signal.Notify(shutdownSignals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
+
 	// Give spawned services systemd's default exec PATH. atom inherits no PATH as
 	// init, so bare-name ExecStart (udevadm, systemd-tmpfiles, agetty) would fail
 	// to resolve -- exec.Command resolves argv[0] against THIS process's PATH.
@@ -302,8 +308,16 @@ func boot(cfg bootConfig) int {
 	logf("transaction: %d units, %d layers", len(plan.Units), len(plan.Layers))
 
 	start := time.Now()
-	if err := m.StartTarget(context.Background(), cfg.target); err != nil {
-		logf("ERROR starting %s: %v", cfg.target, err)
+	started := make(chan error, 1)
+	go func() { started <- m.StartTarget(context.Background(), cfg.target) }()
+	select {
+	case err := <-started:
+		if err != nil {
+			logf("ERROR starting %s: %v", cfg.target, err)
+		}
+	case sig := <-shutdownSignals:
+		logf("got signal %v while starting %s, shutting down", sig, cfg.target)
+		return stopAndPowerDown(m, cfg.target, sig)
 	}
 	logf("reached %s in %s", cfg.target, time.Since(start).Round(time.Millisecond))
 	startWatchdog()
@@ -322,7 +336,7 @@ func boot(cfg bootConfig) int {
 		func(n string) error { return m.StartUnit(context.Background(), n) },
 		logf, start).Run(context.Background())
 
-	waitForShutdown(m, cfg.target)
+	waitForShutdown(m, cfg.target, shutdownSignals)
 	return 0
 }
 
@@ -339,18 +353,18 @@ func setupCgroupHierarchy() {
 // waitForShutdown blocks until a shutdown signal, then stops and powers off or
 // reboots. SIGTERM/SIGINT => power off; SIGINT from Ctrl-Alt-Del (the kernel
 // sends SIGINT to PID 1 after CAD_OFF) is treated as reboot via the keyword.
-func waitForShutdown(m *core.Manager, target string) {
-	ch := make(chan os.Signal, 4)
-	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
+func waitForShutdown(m *core.Manager, target string, ch <-chan os.Signal) {
 	sig := <-ch
 	logf("got signal %v, shutting down", sig)
+	stopAndPowerDown(m, target, sig)
+}
+
+func stopAndPowerDown(m *core.Manager, target string, sig os.Signal) int {
 	shutdown(m, target)
-	switch sig {
-	case syscall.SIGINT:
-		reboot()
-	default:
-		powerOff()
+	if sig == syscall.SIGINT {
+		return reboot()
 	}
+	return powerOff()
 }
 
 // emergency is the last-resort path when the boot transaction cannot even be built.
