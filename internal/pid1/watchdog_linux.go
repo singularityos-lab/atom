@@ -11,6 +11,7 @@ import (
 const (
 	wdiocKeepalive  = 0x80045705
 	wdiocSetTimeout = 0xC0045706
+	wdiocGetTimeout = 0x80045707
 	watchdogDevice  = "/dev/watchdog0"
 )
 
@@ -47,6 +48,13 @@ func runWatchdog(timeout int) {
 	t := int32(timeout)
 	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), wdiocSetTimeout, uintptr(unsafe.Pointer(&t))); errno != 0 {
 		logf("watchdog: set timeout %ds: %v", timeout, errno)
+	}
+	var actual int32
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), wdiocGetTimeout, uintptr(unsafe.Pointer(&actual))); errno == 0 && actual > 0 {
+		t = actual
+	} else if errno != 0 {
+		logf("watchdog: get timeout: %v", errno)
+		t = 4
 	}
 	logf("hardware watchdog armed, timeout %ds", t)
 	interval := time.Duration(t) * time.Second / 4
