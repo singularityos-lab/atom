@@ -72,13 +72,15 @@ type Config struct {
 	ExecStart     []ExecCommand
 	ExecStartPost []ExecCommand
 	ExecStop      []ExecCommand
+	ExecStopPost  []ExecCommand
 
-	Environment     []string
-	WorkingDir      string
-	RemainAfterExit bool
-	NotifyAccess    string
-	PIDFile         string
-	BusName         string // Type=dbus readiness: the well-known name to wait for
+	Environment      []string
+	EnvironmentFiles []string
+	WorkingDir       string
+	RemainAfterExit  bool
+	NotifyAccess     string
+	PIDFile          string
+	BusName          string // Type=dbus readiness: the well-known name to wait for
 
 	// Credentials and managed directories.
 	User             string
@@ -136,6 +138,9 @@ func ConfigFromFile(f *unit.File) (Config, error) {
 	if c.ExecStop, err = parseList("ExecStop"); err != nil {
 		return c, err
 	}
+	if c.ExecStopPost, err = parseList("ExecStopPost"); err != nil {
+		return c, err
+	}
 
 	typeStr, _ := f.Get("Service", "Type")
 	c.Type = parseType(typeStr)
@@ -144,6 +149,7 @@ func ConfigFromFile(f *unit.File) (Config, error) {
 	for _, line := range f.List("Service", "Environment") {
 		c.Environment = append(c.Environment, strings.Fields(line)...)
 	}
+	c.EnvironmentFiles = f.List("Service", "EnvironmentFile")
 	c.WorkingDir = f.GetDefault("Service", "WorkingDirectory", "")
 	c.User = f.GetDefault("Service", "User", "")
 	c.Group = f.GetDefault("Service", "Group", "")

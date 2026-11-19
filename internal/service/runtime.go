@@ -95,6 +95,8 @@ type Service struct {
 
 	cred *syscall.Credential // resolved User=/Group=, applied to spawned procs
 
+	fileEnv []string
+
 	// forkedPID is the daemon a Type=forking launcher fork()ed, learned from
 	// PIDFile= after the launcher exits. Stop/kill target this, not the dead
 	// launcher.
@@ -245,6 +247,7 @@ func (s *Service) startDry() error {
 func (s *Service) startOneshot(ctx context.Context) error {
 	for _, cmd := range s.cfg.ExecStart {
 		if err := s.runToCompletion(ctx, cmd); err != nil {
+			s.runStopPost()
 			s.setState(Failed)
 			return fmt.Errorf("%s: ExecStart (oneshot): %w", s.cfg.Name, err)
 		}
@@ -555,6 +558,7 @@ func (s *Service) supervise() {
 		s.mu.Unlock()
 
 		if !mode.ShouldRestart(info) {
+			s.runStopPost()
 			if info.Clean() {
 				s.setState(Inactive)
 			} else {
@@ -720,8 +724,20 @@ func (s *Service) Stop(ctx context.Context) error {
 	if s.notify != nil {
 		s.notify.Close()
 	}
+	s.runStopPost()
 	s.setState(Inactive)
 	return nil
+}
+
+func (s *Service) runStopPost() {
+	if len(s.cfg.ExecStopPost) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultStopTimeout)
+	defer cancel()
+	for _, ec := range s.cfg.ExecStopPost {
+		_ = s.runToCompletion(ctx, ec)
+	}
 }
 
 func (s *Service) runPost(ctx context.Context) {
@@ -831,6 +847,7 @@ func (s *Service) baseEnv(extra []string) []string {
 	env := append([]string{
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	}, s.cfg.Environment...)
+	env = append(env, s.fileEnv...)
 	return append(env, extra...)
 }
 
@@ -886,6 +903,11 @@ func (s *Service) prepare() error {
 		}
 		s.cred.Gid = uint32(gid)
 	}
+	env, err := readEnvironmentFiles(s.cfg.EnvironmentFiles)
+	if err != nil {
+		return err
+	}
+	s.fileEnv = env
 	for _, d := range s.cfg.RuntimeDirectory {
 		s.makeManagedDir(filepath.Join("/run", d))
 	}
