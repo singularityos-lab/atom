@@ -348,7 +348,7 @@ func (s *Service) startDbus(ctx context.Context) error {
 		go s.supervise()
 		return nil
 	case <-done:
-		s.setState(Failed)
+		s.failBeforeReady()
 		return fmt.Errorf("%s: exited before acquiring bus name %s", s.cfg.Name, s.cfg.BusName)
 	}
 }
@@ -387,7 +387,12 @@ func (s *Service) startNotify(ctx context.Context) error {
 		go s.supervise()
 		return nil
 	case <-done:
-		s.setState(Failed)
+		if s.failBeforeReady() && s.cfg.WatchdogSec > 0 {
+			go func() {
+				<-ready
+				s.watchdog()
+			}()
+		}
 		return fmt.Errorf("%s: exited before READY=1", s.cfg.Name)
 	case <-ctx.Done():
 		s.killMain()
@@ -590,6 +595,17 @@ func (s *Service) supervise() {
 		s.mu.Unlock()
 		s.setState(Active)
 	}
+}
+
+func (s *Service) failBeforeReady() bool {
+	s.setState(Failed)
+	s.mu.Lock()
+	restart := !s.stopping && s.cfg.RestartMode.ShouldRestart(s.lastExit)
+	s.mu.Unlock()
+	if restart {
+		go s.supervise()
+	}
+	return restart
 }
 
 // allowRestart enforces StartLimitBurst within StartLimitInterval.
