@@ -132,10 +132,22 @@ func (s *Service) RestartCount() int {
 	return s.restartCount
 }
 
+type EventSink interface {
+	UnitFailed(unit string, exit ExitInfo)
+	UnitRestarted(unit string, count int)
+}
+
+var Events EventSink
+
 func (s *Service) setState(st State) {
 	s.mu.Lock()
+	was := s.state
 	s.state = st
+	exit := s.lastExit
 	s.mu.Unlock()
+	if st == Failed && was != Failed && Events != nil {
+		Events.UnitFailed(s.cfg.Name, exit)
+	}
 }
 
 // beginStart atomically claims the start. It returns false when the service is
@@ -592,8 +604,12 @@ func (s *Service) supervise() {
 		}
 		s.mu.Lock()
 		s.restartCount++
+		count := s.restartCount
 		s.mu.Unlock()
 		s.setState(Active)
+		if Events != nil {
+			Events.UnitRestarted(s.cfg.Name, count)
+		}
 	}
 }
 

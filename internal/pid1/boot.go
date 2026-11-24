@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mirkobrombin/atomloops/sealedlog"
+
 	"github.com/singularityos-lab/atom/internal/cgroup"
 	"github.com/singularityos-lab/atom/internal/control"
 	"github.com/singularityos-lab/atom/internal/core"
@@ -304,6 +306,10 @@ func boot(cfg bootConfig) int {
 		logf("sdb control socket at %s", control.DefaultSDBSocket)
 	}
 
+	sealed := newSealedRecorder(func() (*sealedlog.Writer, error) { return sealedlog.Open("sinit") })
+	service.Events = sealed
+	sealed.log("start")
+
 	plan := m.Plan(cfg.target)
 	logf("transaction: %d units, %d layers", len(plan.Units), len(plan.Layers))
 
@@ -317,9 +323,11 @@ func boot(cfg bootConfig) int {
 		}
 	case sig := <-shutdownSignals:
 		logf("got signal %v while starting %s, shutting down", sig, cfg.target)
+		sealed.log("shutdown", 2)
 		return stopAndPowerDown(m, cfg.target, sig)
 	}
 	logf("reached %s in %s", cfg.target, time.Since(start).Round(time.Millisecond))
+	sealed.log("target", uint64(time.Since(start).Milliseconds()), uint64(len(plan.Units)))
 	startWatchdog()
 	startKernelLog()
 
@@ -336,7 +344,12 @@ func boot(cfg bootConfig) int {
 		func(n string) error { return m.StartUnit(context.Background(), n) },
 		logf, start).Run(context.Background())
 
-	waitForShutdown(m, cfg.target, shutdownSignals)
+	go func() {
+		for range time.Tick(30 * time.Second) {
+			sealed.flush()
+		}
+	}()
+	waitForShutdown(m, cfg.target, shutdownSignals, sealed)
 	return 0
 }
 
@@ -353,9 +366,14 @@ func setupCgroupHierarchy() {
 // waitForShutdown blocks until a shutdown signal, then stops and powers off or
 // reboots. SIGTERM/SIGINT => power off; SIGINT from Ctrl-Alt-Del (the kernel
 // sends SIGINT to PID 1 after CAD_OFF) is treated as reboot via the keyword.
-func waitForShutdown(m *core.Manager, target string, ch <-chan os.Signal) {
+func waitForShutdown(m *core.Manager, target string, ch <-chan os.Signal, sealed *sealedRecorder) {
 	sig := <-ch
 	logf("got signal %v, shutting down", sig)
+	reboot := uint64(0)
+	if sig == syscall.SIGINT {
+		reboot = 1
+	}
+	sealed.log("shutdown", reboot)
 	stopAndPowerDown(m, target, sig)
 }
 
