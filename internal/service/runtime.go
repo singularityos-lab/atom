@@ -587,6 +587,9 @@ func (s *Service) supervise() {
 			s.setState(Failed) // start-limit hit
 			return
 		}
+		if !info.Clean() && Events != nil {
+			Events.UnitFailed(s.cfg.Name, info)
+		}
 
 		s.setState(Activating)
 		time.Sleep(s.cfg.RestartSec)
