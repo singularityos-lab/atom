@@ -551,9 +551,28 @@ func (s *Service) watchdog() {
 		}
 		s.mu.Unlock()
 		if miss && main != nil && main.Process != nil {
-			_ = main.Process.Kill()
+			killHung(main.Process.Pid)
 		}
 	}
+}
+
+// watchdogGrace is how long a hung service has to write its core dump after
+// SIGABRT before it is killed outright.
+var watchdogGrace = 5 * time.Second
+
+// killHung aborts a service that stopped answering its watchdog, so the core
+// dump shows where it hung, then kills whatever is left. Services start in
+// their own session, so the whole process group goes: a wrapper script must
+// not leave the hung program it launched behind.
+func killHung(pid int) {
+	target := pid
+	if pgid, err := syscall.Getpgid(pid); err == nil && pgid == pid {
+		target = -pid
+	}
+	_ = syscall.Kill(target, syscall.SIGABRT)
+	time.AfterFunc(watchdogGrace, func() {
+		_ = syscall.Kill(target, syscall.SIGKILL)
+	})
 }
 
 // supervise watches the main process and applies the Restart= policy with

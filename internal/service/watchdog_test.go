@@ -4,6 +4,11 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -58,4 +63,38 @@ func TestWatchdogRestartsOnMiss(t *testing.T) {
 		t.Errorf("watchdog miss did not trigger a restart (count=%d)", s.RestartCount())
 	}
 	_ = s.Stop(context.Background())
+}
+
+func TestKillHungTakesTheWholeGroup(t *testing.T) {
+	requireBins(t, "/bin/sh", "/bin/sleep")
+	old := watchdogGrace
+	watchdogGrace = 100 * time.Millisecond
+	defer func() { watchdogGrace = old }()
+
+	pidFile := filepath.Join(t.TempDir(), "child")
+	c := exec.Command("/bin/sh", "-c", "trap '' ABRT; /bin/sleep 30 & echo $! > "+pidFile+"; wait")
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var child int
+	for i := 0; i < 100 && child == 0; i++ {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			child, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if child == 0 {
+		t.Fatal("child never started")
+	}
+	killHung(c.Process.Pid)
+	_ = c.Wait()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(child, 0) != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the hung service's child survived")
 }
