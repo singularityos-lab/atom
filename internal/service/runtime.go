@@ -81,6 +81,7 @@ type Service struct {
 	DryRun bool
 
 	mu           sync.Mutex
+	spawnMu      sync.Mutex
 	state        State
 	main         *exec.Cmd
 	notify       *notify.Listener
@@ -595,14 +596,17 @@ func (s *Service) supervise() {
 		s.setState(Activating)
 		time.Sleep(s.cfg.RestartSec)
 
+		s.spawnMu.Lock()
 		s.mu.Lock()
 		stopping := s.stopping
 		s.mu.Unlock()
 		if stopping {
+			s.spawnMu.Unlock()
 			return
 		}
-
-		if _, err := s.spawnMain(); err != nil {
+		_, err := s.spawnMain()
+		s.spawnMu.Unlock()
+		if err != nil {
 			s.setState(Failed)
 			return
 		}
@@ -752,10 +756,14 @@ func (s *Service) pollStatus(pid int, ws <-chan syscall.WaitStatus) ExitInfo {
 func (s *Service) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	s.stopping = true
+	s.mu.Unlock()
+	s.spawnMu.Lock()
+	s.mu.Lock()
 	main := s.main
 	exited := s.exited
 	forked := s.forkedPID
 	s.mu.Unlock()
+	s.spawnMu.Unlock()
 
 	s.setState(Deactivating)
 	for _, ec := range s.cfg.ExecStop {
