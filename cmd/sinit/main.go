@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/singularityos-lab/atom/internal/atomctl"
+	"github.com/singularityos-lab/atom/internal/coredump"
 	"github.com/singularityos-lab/atom/internal/logkeep"
 	"github.com/singularityos-lab/atom/internal/pid1"
 	"github.com/singularityos-lab/atom/internal/sessionrun"
@@ -86,6 +87,12 @@ func run(argv []string) int {
 	case "logkeep":
 		if err := logkeep.Run(logkeep.Default()); err != nil {
 			fmt.Fprintf(os.Stderr, "sinit logkeep: %v\n", err)
+			return 1
+		}
+		return 0
+	case "coredump":
+		if err := coredump.Run(coredump.Default(), argv[2:], os.Stdin); err != nil {
+			fmt.Fprintf(os.Stderr, "sinit coredump: %v\n", err)
 			return 1
 		}
 		return 0
