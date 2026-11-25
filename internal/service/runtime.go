@@ -872,7 +872,7 @@ func (s *Service) startCmd(cmd *exec.Cmd) error {
 		cmd.Stderr = wire(s.Stderr)
 	}
 
-	err := cmd.Start()
+	err := s.withSched(cmd.Start)
 	for _, p := range pipes {
 		p.w.Close() // the parent drops its write end; the child keeps its own dup
 		if err != nil {

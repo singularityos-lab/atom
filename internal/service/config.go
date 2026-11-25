@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -107,6 +108,71 @@ type Config struct {
 	// RuntimeDir is the base for the per-service notify socket (default
 	// /run/atom). Overridable so the runtime is testable in a temp dir.
 	RuntimeDir string
+
+	// Sched holds the CPU and I/O priorities every process of the unit
+	// starts with.
+	Sched Sched
+}
+
+// Sched mirrors Nice=, CPUSchedulingPolicy=, CPUSchedulingPriority=,
+// IOSchedulingClass= and IOSchedulingPriority=. Negative class and policy
+// values mean unset.
+type Sched struct {
+	Nice       *int
+	Policy     int
+	Priority   int
+	IOClass    int
+	IOPriority int
+}
+
+func (s Sched) set() bool { return s.Nice != nil || s.Policy >= 0 || s.IOClass >= 0 }
+
+func parseSched(f *unit.File) (Sched, error) {
+	sc := Sched{Policy: -1, IOClass: -1}
+	if v, ok := f.Get("Service", "Nice"); ok && v != "" {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil || n < -20 || n > 19 {
+			return sc, fmt.Errorf("Nice=%s: want -20..19", v)
+		}
+		sc.Nice = &n
+	}
+	if v, ok := f.Get("Service", "CPUSchedulingPolicy"); ok && v != "" {
+		policies := map[string]int{"other": 0, "fifo": 1, "rr": 2, "batch": 3, "idle": 5}
+		p, known := policies[strings.TrimSpace(v)]
+		if !known {
+			return sc, fmt.Errorf("CPUSchedulingPolicy=%s: unknown policy", v)
+		}
+		sc.Policy = p
+		if p == 1 || p == 2 {
+			prio := int(f.Int("Service", "CPUSchedulingPriority", 1))
+			if prio < 1 || prio > 99 {
+				return sc, fmt.Errorf("CPUSchedulingPriority=%d: want 1..99", prio)
+			}
+			sc.Priority = prio
+		}
+	}
+	if v, ok := f.Get("Service", "IOSchedulingClass"); ok && v != "" {
+		classes := map[string]int{"none": 0, "0": 0, "realtime": 1, "1": 1, "best-effort": 2, "2": 2, "idle": 3, "3": 3}
+		c, known := classes[strings.TrimSpace(v)]
+		if !known {
+			return sc, fmt.Errorf("IOSchedulingClass=%s: unknown class", v)
+		}
+		sc.IOClass = c
+		prio := int(f.Int("Service", "IOSchedulingPriority", 4))
+		if prio < 0 || prio > 7 {
+			return sc, fmt.Errorf("IOSchedulingPriority=%d: want 0..7", prio)
+		}
+		if c == 1 || c == 2 {
+			sc.IOPriority = prio
+		}
+	} else if v, ok := f.Get("Service", "IOSchedulingPriority"); ok && v != "" {
+		prio := int(f.Int("Service", "IOSchedulingPriority", 4))
+		if prio < 0 || prio > 7 {
+			return sc, fmt.Errorf("IOSchedulingPriority=%d: want 0..7", prio)
+		}
+		sc.IOClass, sc.IOPriority = 2, prio
+	}
+	return sc, nil
 }
 
 // ConfigFromFile projects a parsed unit file into a service Config.
@@ -168,5 +234,8 @@ func ConfigFromFile(f *unit.File) (Config, error) {
 	c.WatchdogSec = f.Duration("Service", "WatchdogSec", 0)
 	// TimeoutStartSec, falling back to TimeoutSec (which sets both start+stop).
 	c.TimeoutStartSec = f.Duration("Service", "TimeoutStartSec", f.Duration("Service", "TimeoutSec", 0))
+	if c.Sched, err = parseSched(f); err != nil {
+		return c, err
+	}
 	return c, nil
 }
