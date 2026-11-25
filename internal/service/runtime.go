@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/singularityos-lab/atom/internal/dbus"
+	"github.com/singularityos-lab/atom/internal/reaper"
 
 	"github.com/singularityos-lab/atom/internal/notify"
 	"github.com/singularityos-lab/atom/internal/socketact"
@@ -666,7 +667,10 @@ func exitInfoFromStatus(ws syscall.WaitStatus) ExitInfo {
 }
 
 // statusPoll is how often a waiter checks that its child still exists.
-const statusPoll = time.Second
+const (
+	statusPoll  = time.Second
+	statusGrace = 2 * time.Second
+)
 
 // ReaperWait, when set (by PID 1), is the sole source of child exit statuses:
 // it registers interest in a pid and returns a channel for its WaitStatus. With
@@ -701,8 +705,28 @@ func (s *Service) registerWait(cmd *exec.Cmd) <-chan ExitInfo {
 
 // awaitStatus waits for the reaper's status for pid. A child that is gone with no
 // status must not wedge the boot, so that case ends the wait as a clean exit and is
-// logged.
+// logged. The exit itself is observed through a pidfd, so an idle service costs no
+// wakeups; only kernels without pidfds fall back to polling.
 func (s *Service) awaitStatus(pid int, ws <-chan syscall.WaitStatus) ExitInfo {
+	exited := reaper.Exited(pid)
+	if exited == nil {
+		return s.pollStatus(pid, ws)
+	}
+	select {
+	case status := <-ws:
+		return exitInfoFromStatus(status)
+	case <-exited:
+	}
+	select {
+	case status := <-ws:
+		return exitInfoFromStatus(status)
+	case <-time.After(statusGrace):
+		fmt.Fprintf(os.Stderr, "sinit: %s: pid %d exited with no status\n", s.cfg.Name, pid)
+		return ExitInfo{}
+	}
+}
+
+func (s *Service) pollStatus(pid int, ws <-chan syscall.WaitStatus) ExitInfo {
 	tick := time.NewTicker(statusPoll)
 	defer tick.Stop()
 	gone := false
