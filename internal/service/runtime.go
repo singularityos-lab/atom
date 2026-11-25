@@ -92,6 +92,8 @@ type Service struct {
 	restartTimes []time.Time
 	restartCount int
 
+	changed chan struct{}
+
 	lastPing        time.Time // last WATCHDOG=1 (or spawn) time
 	watchdogPending bool      // a watchdog miss killed the current instance
 
@@ -141,11 +143,33 @@ type EventSink interface {
 
 var Events EventSink
 
+func (s *Service) WaitInactive() {
+	for {
+		s.mu.Lock()
+		switch s.state {
+		case Active, Activating, Deactivating:
+		default:
+			s.mu.Unlock()
+			return
+		}
+		if s.changed == nil {
+			s.changed = make(chan struct{})
+		}
+		ch := s.changed
+		s.mu.Unlock()
+		<-ch
+	}
+}
+
 func (s *Service) setState(st State) {
 	s.mu.Lock()
 	was := s.state
 	s.state = st
 	exit := s.lastExit
+	if s.changed != nil && st != was {
+		close(s.changed)
+		s.changed = nil
+	}
 	s.mu.Unlock()
 	if st == Failed && was != Failed && Events != nil {
 		Events.UnitFailed(s.cfg.Name, exit)
@@ -551,7 +575,7 @@ func (s *Service) watchdog() {
 		}
 		s.mu.Unlock()
 		if miss && main != nil && main.Process != nil {
-			killHung(main.Process.Pid)
+			s.killHung(main.Process.Pid)
 		}
 	}
 }
@@ -564,14 +588,16 @@ var watchdogGrace = 5 * time.Second
 // dump shows where it hung, then kills whatever is left. Services start in
 // their own session, so the whole process group goes: a wrapper script must
 // not leave the hung program it launched behind.
-func killHung(pid int) {
+func (s *Service) killHung(pid int) {
 	target := pid
 	if pgid, err := syscall.Getpgid(pid); err == nil && pgid == pid {
 		target = -pid
 	}
 	_ = syscall.Kill(target, syscall.SIGABRT)
 	time.AfterFunc(watchdogGrace, func() {
-		_ = syscall.Kill(target, syscall.SIGKILL)
+		if !s.killCgroup() {
+			_ = syscall.Kill(target, syscall.SIGKILL)
+		}
 	})
 }
 
@@ -597,6 +623,7 @@ func (s *Service) supervise() {
 
 		if !mode.ShouldRestart(info) {
 			s.runStopPost()
+			s.removeCgroup()
 			if info.Clean() {
 				s.setState(Inactive)
 			} else {
@@ -614,6 +641,7 @@ func (s *Service) supervise() {
 
 		s.setState(Activating)
 		time.Sleep(s.cfg.RestartSec)
+		s.killCgroup()
 
 		s.spawnMu.Lock()
 		s.mu.Lock()
@@ -807,10 +835,12 @@ func (s *Service) Stop(ctx context.Context) error {
 			<-exited
 		}
 	}
+	s.killCgroup()
 	if s.notify != nil {
 		s.notify.Close()
 	}
 	s.runStopPost()
+	s.removeCgroup()
 	s.setState(Inactive)
 	return nil
 }
@@ -899,7 +929,10 @@ func (s *Service) startCmd(cmd *exec.Cmd) error {
 		cmd.Stderr = wire(s.Stderr)
 	}
 
+	release := s.enterCgroup(cmd)
 	err := s.withSched(cmd.Start)
+	release()
+	cgroupStartFailed(cmd, err)
 	for _, p := range pipes {
 		p.w.Close() // the parent drops its write end; the child keeps its own dup
 		if err != nil {

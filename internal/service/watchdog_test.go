@@ -87,7 +87,7 @@ func TestKillHungTakesTheWholeGroup(t *testing.T) {
 	if child == 0 {
 		t.Fatal("child never started")
 	}
-	killHung(c.Process.Pid)
+	(&Service{}).killHung(c.Process.Pid)
 	_ = c.Wait()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

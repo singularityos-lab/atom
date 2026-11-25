@@ -270,6 +270,17 @@ func boot(cfg bootConfig) int {
 		paths = append(paths, unit.DefaultSearchPath...)
 	}
 	loader := &unit.Loader{Paths: paths}
+	service.SliceLimits = func(slice string) cgroup.Limits {
+		f, err := loader.Load(slice)
+		if err != nil {
+			return cgroup.Limits{}
+		}
+		l, err := service.ParseLimits(f, "Slice")
+		if err != nil {
+			logf("%s: %v", slice, err)
+		}
+		return l
+	}
 
 	m, err := core.Build(loader, cfg.target)
 	if err != nil {
@@ -361,6 +372,19 @@ func setupCgroupHierarchy() {
 			logf("cgroup %s: %v", slice, err)
 		}
 	}
+	if _, err := os.Stat(cg.Abs("cgroup.controllers")); err != nil {
+		return
+	}
+	for _, c := range []string{"cpu", "io", "memory", "pids"} {
+		if err := cg.EnableControllers("", c); err != nil {
+			logf("cgroup controller %s: %v", c, err)
+		}
+	}
+	if err := service.ProbeCgroups(cg, "/bin/true"); err != nil {
+		logf("cgroup: services stay in the root cgroup: %v", err)
+		return
+	}
+	service.Cgroups = cg
 }
 
 // waitForShutdown blocks until a shutdown signal, then stops and powers off or

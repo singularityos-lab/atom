@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/singularityos-lab/atom/internal/cgroup"
 	"github.com/singularityos-lab/atom/internal/unit"
 )
 
@@ -112,6 +113,9 @@ type Config struct {
 	// Sched holds the CPU and I/O priorities every process of the unit
 	// starts with.
 	Sched Sched
+
+	Slice  string
+	Limits cgroup.Limits
 }
 
 // Sched mirrors Nice=, CPUSchedulingPolicy=, CPUSchedulingPriority=,
@@ -237,5 +241,109 @@ func ConfigFromFile(f *unit.File) (Config, error) {
 	if c.Sched, err = parseSched(f); err != nil {
 		return c, err
 	}
+	c.Slice = f.GetDefault("Service", "Slice", DefaultSlice)
+	if !ValidSlice(c.Slice) {
+		return c, fmt.Errorf("Slice=%s: not a slice name", c.Slice)
+	}
+	if c.Limits, err = ParseLimits(f, "Service"); err != nil {
+		return c, err
+	}
 	return c, nil
+}
+
+const DefaultSlice = "system.slice"
+
+func ValidSlice(name string) bool {
+	if !strings.HasSuffix(name, ".slice") || len(name) == len(".slice") || name == "-.slice" {
+		return false
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' || r == '@') {
+			return false
+		}
+	}
+	return true
+}
+
+func ParseLimits(f *unit.File, section string) (cgroup.Limits, error) {
+	var l cgroup.Limits
+	weight := func(key string) (int, error) {
+		v, ok := f.Get(section, key)
+		if !ok || strings.TrimSpace(v) == "" {
+			return 0, nil
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil || n < 1 || n > 10000 {
+			return 0, fmt.Errorf("%s=%s: want 1..10000", key, v)
+		}
+		return n, nil
+	}
+	var err error
+	if l.CPUWeight, err = weight("CPUWeight"); err != nil {
+		return l, err
+	}
+	if l.IOWeight, err = weight("IOWeight"); err != nil {
+		return l, err
+	}
+	if v, ok := f.Get(section, "CPUQuota"); ok && strings.TrimSpace(v) != "" {
+		n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimSpace(v), "%"))
+		if err != nil || n < 1 {
+			return l, fmt.Errorf("CPUQuota=%s: want a percentage", v)
+		}
+		l.CPUQuotaPercent = n
+	}
+	amount := func(key string) (string, error) {
+		v, ok := f.Get(section, key)
+		v = strings.TrimSpace(v)
+		if !ok || v == "" {
+			return "", nil
+		}
+		if v == "infinity" {
+			return "max", nil
+		}
+		n, err := parseBytes(v)
+		if err != nil {
+			return "", fmt.Errorf("%s=%s: %w", key, v, err)
+		}
+		return strconv.FormatUint(n, 10), nil
+	}
+	if l.MemoryMax, err = amount("MemoryMax"); err != nil {
+		return l, err
+	}
+	if l.MemoryHigh, err = amount("MemoryHigh"); err != nil {
+		return l, err
+	}
+	if v, ok := f.Get(section, "TasksMax"); ok && strings.TrimSpace(v) != "" {
+		v = strings.TrimSpace(v)
+		if v == "infinity" {
+			l.TasksMax = "max"
+		} else if n, err := strconv.ParseUint(v, 10, 32); err == nil && n > 0 {
+			l.TasksMax = v
+		} else {
+			return l, fmt.Errorf("TasksMax=%s: want a count or infinity", v)
+		}
+	}
+	return l, nil
+}
+
+func parseBytes(v string) (uint64, error) {
+	mult := uint64(1)
+	switch v[len(v)-1] {
+	case 'K', 'k':
+		mult = 1 << 10
+	case 'M', 'm':
+		mult = 1 << 20
+	case 'G', 'g':
+		mult = 1 << 30
+	case 'T', 't':
+		mult = 1 << 40
+	}
+	if mult != 1 {
+		v = v[:len(v)-1]
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("want a size")
+	}
+	return n * mult, nil
 }

@@ -95,14 +95,7 @@ func (m *Manager) serveConnection(sockName, inst string, c net.Conn) {
 		m.unitError(inst, err)
 		return
 	}
-	for {
-		switch svc.State() {
-		case service.Active, service.Activating, service.Deactivating:
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-		return
-	}
+	svc.WaitInactive()
 }
 
 func (m *Manager) unitError(name string, err error) {
