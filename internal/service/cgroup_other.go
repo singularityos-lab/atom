@@ -22,3 +22,5 @@ func ProbeCgroups(m *cgroup.Manager, bin string) error { return nil }
 func (s *Service) killCgroup() bool { return false }
 
 func (s *Service) removeCgroup() {}
+
+func PrepareSlices(names ...string) {}

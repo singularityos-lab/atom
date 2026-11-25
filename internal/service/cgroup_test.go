@@ -209,3 +209,23 @@ func TestUnusableCgroupFallsBackToAPlainStart(t *testing.T) {
 		t.Fatal("cgroups stayed on after a failed start into one")
 	}
 }
+
+func TestPrepareSlicesAppliesTheSliceUnit(t *testing.T) {
+	m := &cgroup.Manager{Root: t.TempDir()}
+	useCgroups(t, m)
+	old := SliceLimits
+	SliceLimits = func(slice string) cgroup.Limits {
+		if slice == "background.slice" {
+			return cgroup.Limits{CPUWeight: 20, IOWeight: 10}
+		}
+		return cgroup.Limits{}
+	}
+	t.Cleanup(func() { SliceLimits = old })
+	PrepareSlices("background.slice")
+	for file, want := range map[string]string{"cpu.weight": "20", "io.weight": "10"} {
+		b, err := os.ReadFile(m.Abs("background.slice/" + file))
+		if err != nil || strings.TrimSpace(string(b)) != want {
+			t.Errorf("%s = %q (%v), want %q", file, strings.TrimSpace(string(b)), err, want)
+		}
+	}
+}

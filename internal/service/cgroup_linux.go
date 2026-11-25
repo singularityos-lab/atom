@@ -31,6 +31,17 @@ func (s *Service) cgroupPath() string {
 	return slice + "/" + s.cfg.Name
 }
 
+func PrepareSlices(names ...string) {
+	if Cgroups == nil {
+		return
+	}
+	for _, n := range names {
+		if err := ensureSlice(n); err != nil {
+			fmt.Fprintf(os.Stderr, "sinit: %s: %v\n", n, err)
+		}
+	}
+}
+
 func ensureSlice(slice string) error {
 	slicesMu.Lock()
 	defer slicesMu.Unlock()

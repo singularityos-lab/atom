@@ -281,6 +281,7 @@ func boot(cfg bootConfig) int {
 		}
 		return l
 	}
+	service.PrepareSlices("system.slice", "user.slice", "background.slice")
 
 	m, err := core.Build(loader, cfg.target)
 	if err != nil {
