@@ -2,6 +2,7 @@ package pid1
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -280,6 +281,11 @@ func boot(cfg bootConfig) int {
 			logf("%s: %v", slice, err)
 		}
 		return l
+	}
+	if disks, err := cgroup.New().EnableIOCost("/sys/block"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		logf("io cost: %v", err)
+	} else if len(disks) > 0 {
+		logf("io cost enabled on %s", strings.Join(disks, " "))
 	}
 	service.PrepareSlices("system.slice", "user.slice", "background.slice")
 

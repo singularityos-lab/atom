@@ -2,6 +2,7 @@ package cgroup
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -148,4 +149,55 @@ func (m *Manager) Apply(rel string, l Limits) error {
 
 func (m *Manager) write(rel, file, content string) error {
 	return os.WriteFile(filepath.Join(m.Abs(rel), file), []byte(content), 0o644)
+}
+
+var uncostedDisks = []string{"loop", "ram", "zram", "dm-", "md", "sr", "fd", "nbd", "mtdblock"}
+
+// EnableIOCost turns on the iocost controller for every whole disk under
+// sysBlock, which is what makes io.weight take effect. It returns the disks it
+// enabled; a kernel without iocost yields os.ErrNotExist.
+func (m *Manager) EnableIOCost(sysBlock string) ([]string, error) {
+	qos := filepath.Join(m.root(), "io.cost.qos")
+	if _, err := os.Stat(qos); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(sysBlock)
+	if err != nil {
+		return nil, err
+	}
+	var enabled []string
+	var errs []error
+	for _, e := range entries {
+		name := e.Name()
+		if costless(name) {
+			continue
+		}
+		dev, err := os.ReadFile(filepath.Join(sysBlock, name, "dev"))
+		if err != nil {
+			continue
+		}
+		f, err := os.OpenFile(qos, os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			return enabled, err
+		}
+		_, err = fmt.Fprintf(f, "%s enable=1\n", strings.TrimSpace(string(dev)))
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+			continue
+		}
+		enabled = append(enabled, name)
+	}
+	return enabled, errors.Join(errs...)
+}
+
+func costless(name string) bool {
+	for _, prefix := range uncostedDisks {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }

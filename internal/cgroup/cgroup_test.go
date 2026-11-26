@@ -1,8 +1,10 @@
 package cgroup
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -123,4 +125,39 @@ func read(t *testing.T, dir, file string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func TestEnableIOCostCostsWholeDisksOnly(t *testing.T) {
+	root := t.TempDir()
+	sys := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "io.cost.qos"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, dev := range map[string]string{"nvme0n1": "259:0", "sda": "8:0", "loop0": "7:0", "zram0": "252:0", "dm-0": "253:0"} {
+		if err := os.MkdirAll(filepath.Join(sys, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sys, name, "dev"), []byte(dev+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := &Manager{Root: root}
+	enabled, err := m.EnableIOCost(sys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(enabled, " "); got != "nvme0n1 sda" {
+		t.Fatalf("enabled: %q", got)
+	}
+	b, _ := os.ReadFile(filepath.Join(root, "io.cost.qos"))
+	if string(b) != "259:0 enable=1\n8:0 enable=1\n" {
+		t.Fatalf("io.cost.qos: %q", b)
+	}
+}
+
+func TestEnableIOCostWithoutTheController(t *testing.T) {
+	m := &Manager{Root: t.TempDir()}
+	if _, err := m.EnableIOCost(t.TempDir()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("err: %v", err)
+	}
 }
