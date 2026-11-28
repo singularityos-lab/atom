@@ -1,7 +1,9 @@
 // Package logkeep copies the kernel ring buffer and the compositor log of the
 // running boot to disk, keeping the last few boots. It only wakes when one of
-// the sources has new data and flushes each burst to stable storage, so the
-// tail of a boot that ends in a freeze is still on disk.
+// the sources has new data. Kernel warnings and worse reach stable storage at
+// once, so the tail of a boot that ends in a freeze is still on disk; anything
+// else is flushed at most once per flushDelay, so a chatty compositor does not
+// turn every log line into a journal commit.
 package logkeep
 
 import (
@@ -13,7 +15,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 	"unsafe"
+)
+
+const (
+	flushDelay  = time.Second
+	urgentLevel = 4
 )
 
 // Config names the sources and the destination. The zero value is not usable;
@@ -42,9 +50,10 @@ func Default() Config {
 }
 
 type sink struct {
-	f    *os.File
-	size int64
-	cap  int64
+	f     *os.File
+	size  int64
+	cap   int64
+	dirty bool
 }
 
 func (s *sink) write(b []byte) {
@@ -57,6 +66,9 @@ func (s *sink) write(b []byte) {
 	}
 	n, _ := s.f.Write(b)
 	s.size += int64(n)
+	if n > 0 {
+		s.dirty = true
+	}
 }
 
 func (s *sink) full() bool { return s.size >= s.cap }
@@ -138,8 +150,9 @@ func Run(cfg Config) error {
 	sync(kernel, comp)
 
 	events := make([]syscall.EpollEvent, 4)
+	var due time.Time
 	for {
-		n, err := syscall.EpollWait(ep, events, -1)
+		n, err := syscall.EpollWait(ep, events, waitMillis(due, time.Now()))
 		if err == syscall.EINTR {
 			continue
 		}
@@ -147,22 +160,48 @@ func Run(cfg Config) error {
 			sync(kernel, comp)
 			return err
 		}
+		urgent := false
 		for _, ev := range events[:n] {
 			switch int(ev.Fd) {
 			case kfd:
-				drainKernel(kfd, buf, kernel)
+				if drainKernel(kfd, buf, kernel) {
+					urgent = true
+				}
 				if kernel.full() {
 					_ = syscall.EpollCtl(ep, syscall.EPOLL_CTL_DEL, kfd, nil)
 				}
 			case ifd:
-				if readInotify(ifd, buf, fol) {
+				touched, rewatch := readInotify(ifd, buf, fol)
+				if rewatch {
 					watchDir(ifd, fol.dir)
 				}
-				fol.drain(buf, comp)
+				if touched || fol.f == nil {
+					fol.drain(buf, comp)
+				}
 			}
 		}
-		sync(kernel, comp)
+		now := time.Now()
+		switch {
+		case !kernel.dirty && !comp.dirty:
+			due = time.Time{}
+		case urgent || (!due.IsZero() && !now.Before(due)):
+			sync(kernel, comp)
+			due = time.Time{}
+		case due.IsZero():
+			due = now.Add(flushDelay)
+		}
 	}
+}
+
+func waitMillis(due, now time.Time) int {
+	if due.IsZero() {
+		return -1
+	}
+	left := due.Sub(now)
+	if left <= 0 {
+		return 0
+	}
+	return int((left + time.Millisecond - 1) / time.Millisecond)
 }
 
 func openSink(path string, cap int64, gid int, truncate bool) (*sink, error) {
@@ -197,21 +236,42 @@ func rotate(cfg Config) {
 
 func sync(sinks ...*sink) {
 	for _, s := range sinks {
-		_ = syscall.Fdatasync(int(s.f.Fd()))
+		if s.dirty {
+			_ = syscall.Fdatasync(int(s.f.Fd()))
+			s.dirty = false
+		}
 	}
 }
 
-func drainKernel(fd int, buf []byte, out *sink) {
+func drainKernel(fd int, buf []byte, out *sink) (urgent bool) {
 	for !out.full() {
 		n, err := syscall.Read(fd, buf)
 		if err == syscall.EPIPE || err == syscall.EINTR {
 			continue
 		}
 		if err != nil || n <= 0 {
-			return
+			return urgent
+		}
+		if recordLevel(buf[:n]) <= urgentLevel {
+			urgent = true
 		}
 		out.write(buf[:n])
 	}
+	return urgent
+}
+
+func recordLevel(rec []byte) int {
+	prio := 0
+	for i, c := range rec {
+		if c < '0' || c > '9' {
+			if i == 0 {
+				return 0
+			}
+			break
+		}
+		prio = prio*10 + int(c-'0')
+	}
+	return prio & 7
 }
 
 func watchDir(ifd int, dir string) {
@@ -221,14 +281,14 @@ func watchDir(ifd int, dir string) {
 	_, _ = syscall.InotifyAddWatch(ifd, filepath.Dir(dir), syscall.IN_CREATE|syscall.IN_MOVED_TO)
 }
 
-func readInotify(ifd int, buf []byte, fol *follower) (rewatch bool) {
+func readInotify(ifd int, buf []byte, fol *follower) (touched, rewatch bool) {
 	for {
 		n, err := syscall.Read(ifd, buf)
 		if err == syscall.EINTR {
 			continue
 		}
 		if err != nil || n <= 0 {
-			return rewatch
+			return touched, rewatch
 		}
 		for off := 0; off+syscall.SizeofInotifyEvent <= n; {
 			ev := (*syscall.InotifyEvent)(unsafe.Pointer(&buf[off]))
@@ -248,10 +308,14 @@ func readInotify(ifd int, buf []byte, fol *follower) (rewatch bool) {
 			}
 			if ev.Mask&syscall.IN_DELETE_SELF != 0 {
 				rewatch = true
+				touched = true
 				fol.close()
 			}
-			if name == filepath.Base(fol.path) && ev.Mask&(syscall.IN_CREATE|syscall.IN_MOVED_TO) != 0 {
-				fol.close()
+			if name == filepath.Base(fol.path) {
+				touched = true
+				if ev.Mask&(syscall.IN_CREATE|syscall.IN_MOVED_TO) != 0 {
+					fol.close()
+				}
 			}
 			off += syscall.SizeofInotifyEvent + int(ev.Len)
 		}

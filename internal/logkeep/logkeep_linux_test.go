@@ -91,3 +91,35 @@ func TestCapStopsCopying(t *testing.T) {
 		t.Fatalf("cap not honoured: %q", b)
 	}
 }
+
+func TestRecordLevel(t *testing.T) {
+	cases := map[string]int{
+		"3,812,123456,-;nvme0: controller is down\n": 3,
+		"4,13,99,-;warning\n":                        4,
+		"6,1,0,-;Linux version\n":                    6,
+		"30,7,5,-;systemd-like facility info\n":      6,
+		"12,9,1,-;user warning\n":                    4,
+		";no prefix\n":                               0,
+	}
+	for rec, want := range cases {
+		if got := recordLevel([]byte(rec)); got != want {
+			t.Errorf("recordLevel(%q) = %d, want %d", rec, got, want)
+		}
+	}
+}
+
+func TestWaitMillis(t *testing.T) {
+	now := time.Unix(1000, 0)
+	if got := waitMillis(time.Time{}, now); got != -1 {
+		t.Errorf("idle wait = %d, want -1", got)
+	}
+	if got := waitMillis(now.Add(-time.Millisecond), now); got != 0 {
+		t.Errorf("overdue wait = %d, want 0", got)
+	}
+	if got := waitMillis(now.Add(1500*time.Microsecond), now); got != 2 {
+		t.Errorf("partial wait = %d, want 2", got)
+	}
+	if got := waitMillis(now.Add(flushDelay), now); got != 1000 {
+		t.Errorf("full wait = %d, want 1000", got)
+	}
+}
