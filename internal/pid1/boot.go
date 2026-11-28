@@ -348,6 +348,7 @@ func boot(cfg bootConfig) int {
 	sealed.log("target", uint64(time.Since(start).Milliseconds()), uint64(len(plan.Units)))
 	startWatchdog()
 	startKernelLog()
+	startMemoryGuard()
 
 	if cfg.exitAfter {
 		logf("exit-after-target set: shutting down")
